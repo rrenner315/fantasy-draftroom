@@ -19,6 +19,15 @@ type DraftSession = { id: string; name: string; teams: number; mySlot: number; s
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
+type DesktopApi = {
+  loadState: () => Promise<Record<string, unknown> | null>;
+  saveState: (state: Record<string, unknown>) => Promise<string>;
+  exportBackup: () => Promise<{ canceled: boolean; filePath?: string }>;
+  importBackup: () => Promise<{ canceled: boolean }>;
+  getStorageInfo: () => Promise<{ databasePath: string; backupsPath: string }>;
+};
+
+declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
 const positionColors: Record<string, string> = {
   RB: "pos-rb",
@@ -114,12 +123,20 @@ export default function Home() {
   const [nameAction, setNameAction] = useState<NameAction | null>(null);
   const [nameInput, setNameInput] = useState("");
   const [deleteAction, setDeleteAction] = useState<DeleteAction | null>(null);
+  const [desktopMode, setDesktopMode] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("Saved locally");
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("draftroom-state");
-      if (saved) {
-        const state = JSON.parse(saved);
+    let canceled = false;
+    let timer = 0;
+    const restore = async () => {
+      try {
+        const isDesktop = Boolean(window.draftroomDesktop);
+        setDesktopMode(isDesktop);
+        const storedState = isDesktop ? await window.draftroomDesktop!.loadState() : JSON.parse(localStorage.getItem("draftroom-state") || "null");
+        if (canceled) return;
+        if (storedState) {
+          const state = storedState as { rankingSets?: RankingSet[]; activeSetId?: string; activeDraftId?: string; teams?: number; mySlot?: number; snake?: boolean; picks?: DraftPick[]; files?: RankingFile[]; players?: Player[] };
         if (state.rankingSets?.length) {
           const savedSet = state.rankingSets.find((set: RankingSet) => set.id === state.activeSetId) || state.rankingSets[0];
           const savedDraft = savedSet.drafts.find((draft: DraftSession) => draft.id === state.activeDraftId) || savedSet.drafts[0];
@@ -150,15 +167,17 @@ export default function Home() {
           setPicks(legacyDraft.picks);
         }
         setStep("home");
-        setNotice("Your saved ranking sets and drafts were restored.");
+        setNotice(isDesktop ? "Your ranking sets and drafts were restored from the local database." : "Your saved ranking sets and drafts were restored.");
       } else {
         const setId = `set-${Date.now()}`;
         setRankingSets([{ id: setId, name: "My rankings", files: [], players: [], drafts: [] }]);
         setActiveSetId(setId);
       }
-    } catch { setNotice("Your saved board could not be restored, so we started fresh."); }
-    const timer = window.setTimeout(() => { hydrated.current = true; }, 0);
-    return () => window.clearTimeout(timer);
+      } catch { setNotice("Your saved board could not be restored, so we started fresh."); }
+      timer = window.setTimeout(() => { hydrated.current = true; }, 0);
+    };
+    restore();
+    return () => { canceled = true; window.clearTimeout(timer); };
   }, []);
 
   useEffect(() => {
@@ -173,7 +192,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated.current) return;
-    localStorage.setItem("draftroom-state", JSON.stringify({ version: 2, rankingSets, activeSetId, activeDraftId, step }));
+    const state = { version: 2, rankingSets, activeSetId, activeDraftId, step };
+    if (window.draftroomDesktop) {
+      setSaveStatus("Saving…");
+      window.draftroomDesktop.saveState(state).then((savedAt) => setSaveStatus(`Saved ${new Date(savedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`)).catch(() => setSaveStatus("Save failed"));
+    } else {
+      localStorage.setItem("draftroom-state", JSON.stringify(state));
+      setSaveStatus("Saved locally");
+    }
   }, [rankingSets, activeSetId, activeDraftId, step]);
 
   const mergeFiles = (nextFiles: RankingFile[]) => {
@@ -345,11 +371,22 @@ export default function Home() {
 
   const activeSet = rankingSets.find((set) => set.id === activeSetId);
   const activeDraft = activeSet?.drafts.find((draft) => draft.id === activeDraftId);
+  const exportBackup = async () => {
+    const result = await window.draftroomDesktop?.exportBackup();
+    if (result && !result.canceled) setSaveStatus("Backup exported");
+    setWorkspaceOpen(false);
+  };
+  const importBackup = async () => {
+    const result = await window.draftroomDesktop?.importBackup();
+    if (result && !result.canceled) window.location.reload();
+    setWorkspaceOpen(false);
+  };
   const workspaceSwitcher = () => <div className="workspace-switcher">
     <button className="workspace-trigger" aria-label="Open navigation" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen((open) => !open)}><span className="hamburger" aria-hidden="true"><i /><i /><i /></span></button>
     {workspaceOpen && <div className="workspace-menu">
       <div className="workspace-menu-title"><span>NAVIGATION</span><button onClick={createRankingSet}>＋ Rankings set</button></div>
       <button className={step === "home" ? "menu-home active" : "menu-home"} onClick={() => { setStep("home"); setWorkspaceOpen(false); }}><span>⌂</span><div><strong>Home</strong><small>All rankings and drafts</small></div><b>→</b></button>
+      {desktopMode && <div className="backup-tools"><button onClick={exportBackup}><span>⇧</span> Export backup</button><button onClick={importBackup}><span>⇩</span> Restore backup</button></div>}
       <div className="menu-divider"><span>RANKINGS & DRAFTS</span></div>
       {rankingSets.map((set) => <div className={set.id === activeSetId ? "workspace-set active" : "workspace-set"} key={set.id}>
         <div className="workspace-set-head"><strong>{set.name}</strong><div className="workspace-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
@@ -381,7 +418,7 @@ export default function Home() {
       {deleteDialog}
       <header className="topbar home-topbar">
         <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button>
-        <span className="home-saved">● Everything saved locally</span>
+        <span className={saveStatus === "Save failed" ? "home-saved save-error" : "home-saved"}>● {desktopMode ? saveStatus : "Everything saved locally"}</span>
         <div className="home-header-actions"><button className="header-primary" onClick={createRankingSet}>＋ New rankings set</button>{workspaceSwitcher()}</div>
       </header>
       <section className="home-wrap">

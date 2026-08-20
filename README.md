@@ -1,4 +1,28 @@
-# vinext-starter
+# Draftroom
+
+## Offline desktop app
+
+Draftroom can be packaged as a fully offline desktop application. Rankings, tiers, drafts, picks, and rosters are stored in a local SQLite database in the operating system's application-data folder. The app creates one automatic backup per day and retains the ten most recent daily backups.
+
+Users can export a portable `.draftroom` backup or restore one from the navigation menu. No internet connection or account is required after installation.
+
+### Run the desktop app locally
+
+```bash
+npm install
+npm run desktop:run
+```
+
+### Create installers
+
+```bash
+npm run desktop:package:mac
+npm run desktop:package:win
+```
+
+Packaged files are written to `release/`. macOS and Windows packages are unsigned development builds until signing credentials are configured.
+
+## Browser development
 
 A clean full-stack starter running on
 [vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
