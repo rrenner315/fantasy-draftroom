@@ -18,6 +18,7 @@ type DraftPick = Player & { pick: number; roster: number };
 type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[] };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string };
+type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
 
 const positionColors: Record<string, string> = {
   RB: "pos-rb",
@@ -97,7 +98,7 @@ export default function Home() {
   const hydrated = useRef(false);
   const [files, setFiles] = useState<RankingFile[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
-  const [step, setStep] = useState<"rankings" | "setup" | "draft">("rankings");
+  const [step, setStep] = useState<"home" | "rankings" | "setup" | "draft">("home");
   const [teams, setTeams] = useState(12);
   const [mySlot, setMySlot] = useState(4);
   const [snake, setSnake] = useState(true);
@@ -112,6 +113,7 @@ export default function Home() {
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [nameAction, setNameAction] = useState<NameAction | null>(null);
   const [nameInput, setNameInput] = useState("");
+  const [deleteAction, setDeleteAction] = useState<DeleteAction | null>(null);
 
   useEffect(() => {
     try {
@@ -147,7 +149,7 @@ export default function Home() {
           setSnake(legacyDraft.snake);
           setPicks(legacyDraft.picks);
         }
-        setStep(state.step || "rankings");
+        setStep("home");
         setNotice("Your saved ranking sets and drafts were restored.");
       } else {
         const setId = `set-${Date.now()}`;
@@ -318,16 +320,41 @@ export default function Home() {
     setNameInput("");
   };
 
+  const confirmDelete = () => {
+    if (!deleteAction) return;
+    if (deleteAction.kind === "set") {
+      setRankingSets((current) => current.filter((set) => set.id !== deleteAction.setId));
+      if (activeSetId === deleteAction.setId) {
+        setActiveSetId("");
+        setActiveDraftId("");
+        setFiles([]);
+        setPlayers([]);
+        setPicks([]);
+      }
+    } else {
+      setRankingSets((current) => current.map((set) => set.id === deleteAction.setId ? { ...set, drafts: set.drafts.filter((draft) => draft.id !== deleteAction.draftId) } : set));
+      if (activeDraftId === deleteAction.draftId) {
+        setActiveDraftId("");
+        setPicks([]);
+      }
+    }
+    setDeleteAction(null);
+    setWorkspaceOpen(false);
+    setStep("home");
+  };
+
   const activeSet = rankingSets.find((set) => set.id === activeSetId);
   const activeDraft = activeSet?.drafts.find((draft) => draft.id === activeDraftId);
   const workspaceSwitcher = () => <div className="workspace-switcher">
-    <button className="workspace-trigger" onClick={() => setWorkspaceOpen((open) => !open)}><span><small>{activeSet?.name || "Rankings"}</small><strong>{activeDraft?.name || (step === "rankings" ? "Editing rankings" : "Choose a draft")}</strong></span><b>⌄</b></button>
+    <button className="workspace-trigger" aria-label="Open navigation" aria-expanded={workspaceOpen} onClick={() => setWorkspaceOpen((open) => !open)}><span className="hamburger" aria-hidden="true"><i /><i /><i /></span></button>
     {workspaceOpen && <div className="workspace-menu">
-      <div className="workspace-menu-title"><span>YOUR DRAFTROOMS</span><button onClick={createRankingSet}>＋ Rankings set</button></div>
+      <div className="workspace-menu-title"><span>NAVIGATION</span><button onClick={createRankingSet}>＋ Rankings set</button></div>
+      <button className={step === "home" ? "menu-home active" : "menu-home"} onClick={() => { setStep("home"); setWorkspaceOpen(false); }}><span>⌂</span><div><strong>Home</strong><small>All rankings and drafts</small></div><b>→</b></button>
+      <div className="menu-divider"><span>RANKINGS & DRAFTS</span></div>
       {rankingSets.map((set) => <div className={set.id === activeSetId ? "workspace-set active" : "workspace-set"} key={set.id}>
-        <div className="workspace-set-head"><strong>{set.name}</strong><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button></div>
+        <div className="workspace-set-head"><strong>{set.name}</strong><div className="workspace-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
         <div className="workspace-links"><button onClick={() => openRankingSet(set, "rankings")}><span>✦</span> Edit rankings <small>{set.players.length} players</small></button>
-          {set.drafts.map((draft) => <div className={draft.id === activeDraftId ? "workspace-draft selected" : "workspace-draft"} key={draft.id}><button onClick={() => openRankingSet(set, "draft", draft)}><span>▦</span> {draft.name}<small>{draft.picks.length} picks</small></button><button aria-label={`Rename ${draft.name}`} onClick={() => renameDraft(set.id, draft)}>✎</button></div>)}
+          {set.drafts.map((draft) => <div className={draft.id === activeDraftId ? "workspace-draft selected" : "workspace-draft"} key={draft.id}><button onClick={() => openRankingSet(set, "draft", draft)}><span>▦</span> {draft.name}<small>{draft.picks.length} picks</small></button><div className="workspace-item-actions"><button aria-label={`Rename ${draft.name}`} onClick={() => renameDraft(set.id, draft)}>✎</button><button className="delete-icon" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}
           <button className="new-draft-link" onClick={() => createDraft(set)}><span>＋</span> New draft</button>
         </div>
       </div>)}
@@ -341,12 +368,44 @@ export default function Home() {
     <label><span>Name</span><input autoFocus maxLength={60} value={nameInput} onChange={(event) => setNameInput(event.target.value)} /></label>
     <div><button type="button" className="dialog-cancel" onClick={() => setNameAction(null)}>Cancel</button><button type="submit" className="primary" disabled={!nameInput.trim()}>Save name</button></div>
   </form></div>;
+  const deleteDialog = deleteAction && <div className="name-dialog-backdrop" role="presentation" onMouseDown={() => setDeleteAction(null)}><div className="name-dialog delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="delete-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+    <span className="delete-warning">!</span><div className="eyebrow">PERMANENTLY DELETE</div>
+    <h2 id="delete-dialog-title">Delete “{deleteAction.name}”?</h2>
+    <p>{deleteAction.kind === "set" ? "This removes the rankings, custom tiers, and every draft inside this set." : "This removes the draft settings, pick history, and team rosters. Your rankings set will remain."} This cannot be undone.</p>
+    <div><button type="button" className="dialog-cancel" onClick={() => setDeleteAction(null)}>Keep it</button><button type="button" className="danger-button" onClick={confirmDelete}>Delete {deleteAction.kind === "set" ? "rankings set" : "draft"}</button></div>
+  </div></div>;
+
+  if (step === "home") return (
+    <main className="app-shell home-shell">
+      {nameDialog}
+      {deleteDialog}
+      <header className="topbar home-topbar">
+        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button>
+        <span className="home-saved">● Everything saved locally</span>
+        <div className="home-header-actions"><button className="header-primary" onClick={createRankingSet}>＋ New rankings set</button>{workspaceSwitcher()}</div>
+      </header>
+      <section className="home-wrap">
+        <div className="home-hero"><div><div className="eyebrow">YOUR COMMAND CENTER</div><h1>Welcome to your draftroom.</h1><p className="lede">Build rankings once, then take them into as many drafts as you need.</p></div><div className="home-stats"><span><strong>{rankingSets.length}</strong> ranking {rankingSets.length === 1 ? "set" : "sets"}</span><i /><span><strong>{rankingSets.reduce((total, set) => total + set.drafts.length, 0)}</strong> total drafts</span></div></div>
+        <div className="home-section-head"><div><h2>Your rankings</h2><p>Each set keeps its own expert sources, custom order, and tiers.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
+        <div className="ranking-set-grid">
+          {rankingSets.map((set) => <article className="ranking-home-card" key={set.id}>
+            <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} source {set.files.length === 1 ? "file" : "files"}</p></div><div className="card-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
+            <div className="ranking-card-actions"><button onClick={() => openRankingSet(set, "rankings")}><span>✦</span><div><strong>Edit rankings</strong><small>Sources, order & tiers</small></div><b>→</b></button><button onClick={() => createDraft(set)} disabled={!set.players.length}><span>＋</span><div><strong>Start new draft</strong><small>{set.players.length ? "Use this ranking set" : "Add rankings first"}</small></div><b>→</b></button></div>
+            <div className="card-drafts-head"><span>DRAFTS</span><small>{set.drafts.length}</small></div>
+            <div className="home-draft-list">{set.drafts.map((draft) => <div className="home-draft-row" key={draft.id}><span className="draft-status">{draft.picks.length ? "LIVE" : "NEW"}</span><div><strong>{draft.name}</strong><small>{draft.teams} teams · Pick {draft.picks.length + 1} · {draft.snake ? "Snake" : "Linear"}</small></div><div className="draft-row-actions"><button onClick={() => openRankingSet(set, "draft", draft)}>{draft.picks.length ? "Continue" : "Open"} →</button><button className="delete-icon" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}{!set.drafts.length && <div className="no-drafts"><span>⌁</span><p>No drafts started with this set yet.</p></div>}</div>
+          </article>)}
+          <button className="new-set-card" onClick={createRankingSet}><span>＋</span><strong>Create rankings set</strong><small>Upload a different package for 2QB, PPR, dynasty, or another format.</small></button>
+        </div>
+      </section>
+    </main>
+  );
 
   if (step === "rankings") return (
     <main className="app-shell setup-shell">
       {nameDialog}
+      {deleteDialog}
       <header className="topbar">
-        <div className="brand"><span className="brand-mark">D</span><span>Draftroom</span></div>
+        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button>
         <div className="stepper"><span className="active">1 Rankings</span><i /> <span>2 Draft setup</span><i /> <span>3 Draft room</span></div>
         {workspaceSwitcher()}
       </header>
@@ -391,7 +450,8 @@ export default function Home() {
   if (step === "setup") return (
     <main className="app-shell setup-shell">
       {nameDialog}
-      <header className="topbar"><div className="brand"><span className="brand-mark">D</span><span>Draftroom</span></div><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
+      {deleteDialog}
+      <header className="topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
       <section className="draft-setup-card">
         <button className="back" onClick={() => setStep("rankings")}>← Back to rankings</button>
         <div className="eyebrow">LEAGUE SETTINGS</div><h1>Set the room.</h1><p className="lede">Tell us the table size and where you&apos;re sitting. You can change this before the first pick.</p>
@@ -409,7 +469,8 @@ export default function Home() {
   return (
     <main className="app-shell draft-shell">
       {nameDialog}
-      <header className="draft-topbar"><div className="brand"><span className="brand-mark">D</span><span>Draftroom</span></div><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `TEAM ${onClock} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><small>Round {round}</small></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      {deleteDialog}
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `TEAM ${onClock} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><small>Round {round}</small></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className="draft-grid">
         <aside className="recommend-panel"><div className="panel-title"><div><span className="eyebrow">YOUR BOARD</span><h2>Best available</h2></div><span>{available.length} left</span></div>
           <div className="recommendations">{recommendations.map((player, index) => <button className="recommend-card" key={player.id} onClick={() => draftPlayer(player)}><span className="recommend-rank">{index + 1}</span><div><strong>{player.name}</strong><small><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span> {player.team} · Tier {tierLabel(player)}</small></div><span className="add-pick">Draft +</span></button>)}</div>
