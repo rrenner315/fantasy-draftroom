@@ -1,6 +1,6 @@
 {
   "name": "fantasy-draftroom",
-  "productName": "Draftroom",
+  "productName": "The Program",
   "version": "0.1.0",
   "description": "Offline fantasy football draft companion with custom rankings, tiers, and live draft tracking.",
   "author": "Robert Renner",
@@ -51,7 +51,7 @@
   "type": "module",
   "build": {
     "appId": "com.draftroom.fantasy",
-    "productName": "Draftroom",
+    "productName": "The Program",
     "asar": true,
     "files": [
       "desktop-dist/**/*",

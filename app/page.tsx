@@ -115,6 +115,9 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
   const [showAllRankings, setShowAllRankings] = useState(false);
+  const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
+  const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
+  const [dragOverPlayerId, setDragOverPlayerId] = useState<string | null>(null);
   const [notice, setNotice] = useState("Upload your first rankings file to get started.");
   const [rankingSets, setRankingSets] = useState<RankingSet[]>([]);
   const [activeSetId, setActiveSetId] = useState("");
@@ -248,7 +251,43 @@ export default function Home() {
   };
 
   const updateTier = (id: string, tier: number | null) => setPlayers((current) => current.map((p) => p.id === id ? { ...p, tier: tier === null ? null : Math.max(1, tier || 1) } : p));
-  const updateRank = (id: string, rank: number) => setPlayers((current) => current.map((p) => p.id === id ? { ...p, rank: Math.max(1, rank || 1) } : p));
+  const movePlayerToRank = (id: string, requestedRank: number) => setPlayers((current) => {
+    const ordered = [...current].sort((a, b) => a.rank - b.rank);
+    const movingIndex = ordered.findIndex((player) => player.id === id);
+    if (movingIndex < 0) return current;
+
+    const [moving] = ordered.splice(movingIndex, 1);
+    const destination = Math.min(Math.max(requestedRank, 1), ordered.length + 1) - 1;
+    ordered.splice(destination, 0, moving);
+
+    const ranks = new Map(ordered.map((player, index) => [player.id, index + 1]));
+    return current.map((player) => ({ ...player, rank: ranks.get(player.id) ?? player.rank }));
+  });
+  const commitRank = (player: Player) => {
+    const draft = rankInputs[player.id];
+    if (draft !== undefined) {
+      const nextRank = Number.parseInt(draft, 10);
+      if (Number.isFinite(nextRank) && nextRank > 0) movePlayerToRank(player.id, nextRank);
+      setRankInputs((current) => { const next = { ...current }; delete next[player.id]; return next; });
+    }
+  };
+  const reorderPlayer = (movingId: string, targetId: string) => {
+    if (movingId === targetId) return;
+    setPlayers((current) => {
+      const ordered = [...current].sort((a, b) => a.rank - b.rank);
+      const movingIndex = ordered.findIndex((player) => player.id === movingId);
+      if (movingIndex < 0) return current;
+      const [moving] = ordered.splice(movingIndex, 1);
+      const targetIndex = ordered.findIndex((player) => player.id === targetId);
+      if (targetIndex < 0) return current;
+      ordered.splice(targetIndex, 0, moving);
+      const ranks = new Map(ordered.map((player, index) => [player.id, index + 1]));
+      return current.map((player) => ({ ...player, rank: ranks.get(player.id) || player.rank }));
+    });
+    setDraggedPlayerId(null);
+    setDragOverPlayerId(null);
+    setRankInputs({});
+  };
   const resetRanks = () => setPlayers((current) => current.map((player, index) => ({ ...player, rank: index + 1 })));
 
   const draftedIds = new Set(picks.map((pick) => pick.id));
@@ -417,12 +456,12 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       <header className="topbar home-topbar">
-        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button>
+        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button>
         <span className={saveStatus === "Save failed" ? "home-saved save-error" : "home-saved"}>● {desktopMode ? saveStatus : "Everything saved locally"}</span>
         <div className="home-header-actions"><button className="header-primary" onClick={createRankingSet}>＋ New rankings set</button>{workspaceSwitcher()}</div>
       </header>
       <section className="home-wrap">
-        <div className="home-hero"><div><div className="eyebrow">YOUR COMMAND CENTER</div><h1>Welcome to your draftroom.</h1><p className="lede">Build rankings once, then take them into as many drafts as you need.</p></div><div className="home-stats"><span><strong>{rankingSets.length}</strong> ranking {rankingSets.length === 1 ? "set" : "sets"}</span><i /><span><strong>{rankingSets.reduce((total, set) => total + set.drafts.length, 0)}</strong> total drafts</span></div></div>
+        <div className="home-hero"><div><div className="eyebrow">YOUR COMMAND CENTER</div><h1>Welcome to The Program.</h1><p className="lede">Build rankings once, then take them into as many drafts as you need.</p></div><div className="home-stats"><span><strong>{rankingSets.length}</strong> ranking {rankingSets.length === 1 ? "set" : "sets"}</span><i /><span><strong>{rankingSets.reduce((total, set) => total + set.drafts.length, 0)}</strong> total drafts</span></div></div>
         <div className="home-section-head"><div><h2>Your rankings</h2><p>Each set keeps its own expert sources, custom order, and tiers.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
         <div className="ranking-set-grid">
           {rankingSets.map((set) => <article className="ranking-home-card" key={set.id}>
@@ -442,7 +481,7 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       <header className="topbar">
-        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button>
+        <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button>
         <div className="stepper"><span className="active">1 Rankings</span><i /> <span>2 Draft setup</span><i /> <span>3 Draft room</span></div>
         {workspaceSwitcher()}
       </header>
@@ -475,7 +514,10 @@ export default function Home() {
           <div className="section-heading"><div><h2>Make the board yours</h2><p>Edit your personal rank and tiers. Set lower-priority players to N/A and they&apos;ll drop below every numbered tier.</p></div><button className="text-button" onClick={resetRanks}>Reset expert order</button></div>
           <div className="tier-table">
             <div className="tier-table-head"><span>My rank</span><span>Pos</span><span>Player</span><span>Expert source</span><span>My tier</span></div>
-            {[...players].sort((a, b) => a.rank - b.rank).slice(0, showAllRankings ? players.length : 12).map((player) => <div className="tier-row" key={player.id}><label className="rank-field"><span className="sr-only">Personal rank for {player.name}</span><input type="number" min="1" value={player.rank} onChange={(event) => updateRank(player.id, Number(event.target.value))} /></label><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><strong>{player.name}</strong><small>{player.team} · {player.source} #{player.sourceRank}</small><div className="tier-control"><label><span className="sr-only">Tier for {player.name}</span><input type="number" min="1" placeholder="—" value={player.tier ?? ""} onChange={(event) => updateTier(player.id, event.target.value === "" ? null : Number(event.target.value))} /></label><button className={player.tier === null ? "selected" : ""} onClick={() => updateTier(player.id, player.tier === null ? 1 : null)}>N/A</button></div></div>)}
+            {[...players].sort((a, b) => a.rank - b.rank).slice(0, showAllRankings ? players.length : 12).map((player) => <div className={`${draggedPlayerId === player.id ? "tier-row dragging" : "tier-row"}${dragOverPlayerId === player.id ? " drag-target" : ""}`} key={player.id} onDragOver={(event) => { event.preventDefault(); if (draggedPlayerId && draggedPlayerId !== player.id) setDragOverPlayerId(player.id); }} onDragLeave={() => setDragOverPlayerId((current) => current === player.id ? null : current)} onDrop={(event) => { event.preventDefault(); if (draggedPlayerId) reorderPlayer(draggedPlayerId, player.id); }}>
+              <div className="rank-editor"><button className="player-drag-handle" draggable aria-label={`Drag ${player.name} to reorder`} title="Drag to reorder" onDragStart={(event) => { setDraggedPlayerId(player.id); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", player.id); const row = event.currentTarget.closest(".tier-row"); if (row instanceof HTMLElement) { const ghost = row.cloneNode(true) as HTMLElement; ghost.classList.remove("dragging", "drag-target"); ghost.classList.add("drag-ghost"); ghost.style.width = `${row.getBoundingClientRect().width}px`; document.body.appendChild(ghost); event.dataTransfer.setDragImage(ghost, 48, row.offsetHeight / 2); window.requestAnimationFrame(() => ghost.remove()); } }} onDragEnd={() => { setDraggedPlayerId(null); setDragOverPlayerId(null); }}>⋮⋮</button><label className="rank-field"><span className="sr-only">Personal rank for {player.name}</span><input inputMode="numeric" min="1" value={rankInputs[player.id] ?? String(player.rank)} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setRankInputs((current) => ({ ...current, [player.id]: event.target.value.replace(/[^0-9]/g, "") }))} onBlur={() => commitRank(player)} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setRankInputs((current) => { const next = { ...current }; delete next[player.id]; return next; }); event.currentTarget.blur(); } }} /></label></div>
+              <span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><strong>{player.name}</strong><small>{player.team} · {player.source} #{player.sourceRank}</small><div className="tier-control"><label><span className="sr-only">Tier for {player.name}</span><input type="number" min="1" placeholder="—" value={player.tier ?? ""} onChange={(event) => updateTier(player.id, event.target.value === "" ? null : Number(event.target.value))} /></label><button className={player.tier === null ? "selected" : ""} onClick={() => updateTier(player.id, player.tier === null ? 1 : null)}>N/A</button></div>
+            </div>)}
           </div>
           {players.length > 12 && <button className="show-more" onClick={() => setShowAllRankings((current) => !current)}>{showAllRankings ? "Show top 12" : `Edit all ${players.length} players`}</button>}
         </div>}
@@ -488,7 +530,7 @@ export default function Home() {
     <main className="app-shell setup-shell">
       {nameDialog}
       {deleteDialog}
-      <header className="topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
+      <header className="topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
       <section className="draft-setup-card">
         <button className="back" onClick={() => setStep("rankings")}>← Back to rankings</button>
         <div className="eyebrow">LEAGUE SETTINGS</div><h1>Set the room.</h1><p className="lede">Tell us the table size and where you&apos;re sitting. You can change this before the first pick.</p>
@@ -507,7 +549,7 @@ export default function Home() {
     <main className="app-shell draft-shell">
       {nameDialog}
       {deleteDialog}
-      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">D</span><span>Draftroom</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `TEAM ${onClock} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><small>Round {round}</small></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `TEAM ${onClock} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><small>Round {round}</small></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className="draft-grid">
         <aside className="recommend-panel"><div className="panel-title"><div><span className="eyebrow">YOUR BOARD</span><h2>Best available</h2></div><span>{available.length} left</span></div>
           <div className="recommendations">{recommendations.map((player, index) => <button className="recommend-card" key={player.id} onClick={() => draftPlayer(player)}><span className="recommend-rank">{index + 1}</span><div><strong>{player.name}</strong><small><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span> {player.team} · Tier {tierLabel(player)}</small></div><span className="add-pick">Draft +</span></button>)}</div>

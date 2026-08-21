@@ -49,9 +49,9 @@ function registerIpc() {
     const state = readState();
     if (!state) return { canceled: true };
     const result = await dialog.showSaveDialog({
-      title: "Export Draftroom backup",
-      defaultPath: `Draftroom Backup ${new Date().toISOString().slice(0, 10)}.draftroom`,
-      filters: [{ name: "Draftroom backup", extensions: ["draftroom"] }],
+      title: "Export The Program backup",
+      defaultPath: `The Program Backup ${new Date().toISOString().slice(0, 10)}.draftroom`,
+      filters: [{ name: "The Program backup", extensions: ["draftroom"] }],
     });
     if (result.canceled || !result.filePath) return { canceled: true };
     writeAtomic(result.filePath, JSON.stringify({ format: "draftroom-backup", version: 2, exportedAt: new Date().toISOString(), state }, null, 2));
@@ -59,14 +59,14 @@ function registerIpc() {
   });
   ipcMain.handle("draftroom:import-backup", async () => {
     const result = await dialog.showOpenDialog({
-      title: "Restore Draftroom backup",
+      title: "Restore The Program backup",
       properties: ["openFile"],
-      filters: [{ name: "Draftroom backup", extensions: ["draftroom", "json"] }],
+      filters: [{ name: "The Program backup", extensions: ["draftroom", "json"] }],
     });
     if (result.canceled || !result.filePaths[0]) return { canceled: true };
     const parsed = JSON.parse(fs.readFileSync(result.filePaths[0], "utf8"));
     const state = parsed.format === "draftroom-backup" ? parsed.state : parsed;
-    if (!state || !Array.isArray(state.rankingSets)) throw new Error("This file is not a valid Draftroom backup.");
+    if (!state || !Array.isArray(state.rankingSets)) throw new Error("This file is not a valid The Program backup.");
     saveState(state);
     return { canceled: false };
   });
@@ -79,7 +79,7 @@ function createWindow() {
     minWidth: 940,
     minHeight: 640,
     backgroundColor: "#f4f2eb",
-    title: "Draftroom",
+    title: "The Program",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,

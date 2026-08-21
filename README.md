@@ -1,8 +1,8 @@
-# Draftroom
+# The Program
 
 ## Offline desktop app
 
-Draftroom can be packaged as a fully offline desktop application. Rankings, tiers, drafts, picks, and rosters are stored in a local SQLite database in the operating system's application-data folder. The app creates one automatic backup per day and retains the ten most recent daily backups.
+The Program can be packaged as a fully offline desktop application. Rankings, tiers, drafts, picks, and rosters are stored in a local SQLite database in the operating system's application-data folder. The app creates one automatic backup per day and retains the ten most recent daily backups.
 
 Users can export a portable `.draftroom` backup or restore one from the navigation menu. No internet connection or account is required after installation.
 

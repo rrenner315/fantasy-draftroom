@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Draftroom — Fantasy Football Draft Companion",
+  title: "The Program — Fantasy Football Draft Companion",
   description: "Combine your rankings, organize player tiers, and run your fantasy football draft from one local board.",
   icons: {
     icon: "/favicon.svg",
