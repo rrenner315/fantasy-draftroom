@@ -25,7 +25,14 @@ type DesktopApi = {
   exportBackup: () => Promise<{ canceled: boolean; filePath?: string }>;
   importBackup: () => Promise<{ canceled: boolean }>;
   getStorageInfo: () => Promise<{ databasePath: string; backupsPath: string }>;
+  loadFfcRankings: (format: string, teams: number) => Promise<FfcResponse>;
+  loadSleeperRankings: (format: string) => Promise<FfcResponse>;
+  loadEspnRankings: (format: string) => Promise<FfcResponse>;
+  loadYahooRankings: (format: string) => Promise<FfcResponse>;
 };
+
+type FfcPlayer = { player_id: number | string; name: string; position: string; team: string; adp: number };
+type FfcResponse = { status: string; meta?: { type?: string; teams?: number; total_drafts?: number; start_date?: string; end_date?: string }; players: FfcPlayer[] };
 
 declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
@@ -128,6 +135,10 @@ export default function Home() {
   const [deleteAction, setDeleteAction] = useState<DeleteAction | null>(null);
   const [desktopMode, setDesktopMode] = useState(false);
   const [saveStatus, setSaveStatus] = useState("Saved locally");
+  const [onlineFormat, setOnlineFormat] = useState("half-ppr");
+  const [onlineTeams, setOnlineTeams] = useState(12);
+  const [onlineProvider, setOnlineProvider] = useState<"ffc" | "sleeper" | "espn" | "yahoo">("ffc");
+  const [onlineLoading, setOnlineLoading] = useState(false);
 
   useEffect(() => {
     let canceled = false;
@@ -233,6 +244,60 @@ export default function Home() {
     setFiles(next);
     mergeFiles(next);
     if (parsed.length) setNotice(`${parsed.length} file${parsed.length === 1 ? "" : "s"} added. Earlier files take priority.`);
+  };
+
+  const loadOnlineRankings = async () => {
+    setOnlineLoading(true);
+    setNotice("Loading the latest draft data…");
+    try {
+      const endpoint = onlineProvider === "yahoo"
+        ? `/api/rankings/yahoo?format=${encodeURIComponent(onlineFormat)}`
+        : onlineProvider === "espn"
+        ? `/api/rankings/espn?format=${encodeURIComponent(onlineFormat)}`
+        : onlineProvider === "sleeper"
+          ? `/api/rankings/sleeper?format=${encodeURIComponent(onlineFormat)}`
+          : `/api/rankings/ffc?format=${encodeURIComponent(onlineFormat)}&teams=${onlineTeams}`;
+      const response = window.draftroomDesktop
+        ? onlineProvider === "yahoo"
+          ? await window.draftroomDesktop.loadYahooRankings(onlineFormat)
+          : onlineProvider === "espn"
+          ? await window.draftroomDesktop.loadEspnRankings(onlineFormat)
+          : onlineProvider === "sleeper"
+            ? await window.draftroomDesktop.loadSleeperRankings(onlineFormat)
+            : await window.draftroomDesktop.loadFfcRankings(onlineFormat, onlineTeams)
+        : await fetch(endpoint).then(async (result) => {
+            if (!result.ok) throw new Error(await result.text());
+            return result.json() as Promise<FfcResponse>;
+          });
+      if (!Array.isArray(response.players) || !response.players.length) throw new Error("No players were returned.");
+
+      const formatLabel = ({ standard: "Standard", "half-ppr": "Half-PPR", ppr: "PPR", "2qb": "2QB", superflex: "Superflex" } as Record<string, string>)[onlineFormat] || onlineFormat;
+      const loadedAt = new Date();
+      const providerLabel = onlineProvider === "yahoo" ? "Yahoo ADP" : onlineProvider === "espn" ? "ESPN Rankings" : onlineProvider === "sleeper" ? "Sleeper ADP" : "FFC ADP";
+      const leagueLabel = onlineProvider === "ffc" ? ` · ${onlineTeams} teams` : "";
+      const sourceName = `${providerLabel} · ${formatLabel}${leagueLabel} · ${loadedAt.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}`;
+      const importedPlayers: Player[] = response.players.map((player, index) => ({
+        id: `${onlineProvider}-${player.player_id}`,
+        name: player.name,
+        position: player.position === "PK" ? "K" : player.position.toUpperCase(),
+        team: (player.team || "FA").toUpperCase(),
+        rank: index + 1,
+        source: sourceName,
+        sourceRank: index + 1,
+        tier: Math.ceil((index + 1) / 12),
+      }));
+      const rankingFile: RankingFile = { id: `${onlineProvider}-${onlineFormat}-${onlineTeams}-${loadedAt.getTime()}`, name: sourceName, players: importedPlayers };
+      const next = [...files, rankingFile];
+      setFiles(next);
+      mergeFiles(next);
+      const draftCount = response.meta?.total_drafts ? ` from ${response.meta.total_drafts.toLocaleString()} drafts` : "";
+      setNotice(`${importedPlayers.length} players loaded${draftCount}. This snapshot will stay unchanged until you load a new one.`);
+    } catch {
+      const providerName = onlineProvider === "yahoo" ? "Yahoo" : onlineProvider === "espn" ? "ESPN" : onlineProvider === "sleeper" ? "Sleeper" : "Fantasy Football Calculator";
+      setNotice(`We couldn't reach ${providerName}. Check your internet connection and try again; your current rankings were not changed.`);
+    } finally {
+      setOnlineLoading(false);
+    }
   };
 
   const moveFile = (index: number, direction: -1 | 1) => {
@@ -465,7 +530,7 @@ export default function Home() {
         <div className="home-section-head"><div><h2>Your rankings</h2><p>Each set keeps its own expert sources, custom order, and tiers.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
         <div className="ranking-set-grid">
           {rankingSets.map((set) => <article className="ranking-home-card" key={set.id}>
-            <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} source {set.files.length === 1 ? "file" : "files"}</p></div><div className="card-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
+            <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} ranking {set.files.length === 1 ? "source" : "sources"}</p></div><div className="card-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
             <div className="ranking-card-actions"><button onClick={() => openRankingSet(set, "rankings")}><span>✦</span><div><strong>Edit rankings</strong><small>Sources, order & tiers</small></div><b>→</b></button><button onClick={() => createDraft(set)} disabled={!set.players.length}><span>＋</span><div><strong>Start new draft</strong><small>{set.players.length ? "Use this ranking set" : "Add rankings first"}</small></div><b>→</b></button></div>
             <div className="card-drafts-head"><span>DRAFTS</span><small>{set.drafts.length}</small></div>
             <div className="home-draft-list">{set.drafts.map((draft) => <div className="home-draft-row" key={draft.id}><span className="draft-status">{draft.picks.length ? "LIVE" : "NEW"}</span><div><strong>{draft.name}</strong><small>{draft.teams} teams · Pick {draft.picks.length + 1} · {draft.snake ? "Snake" : "Linear"}</small></div><div className="draft-row-actions"><button onClick={() => openRankingSet(set, "draft", draft)}>{draft.picks.length ? "Continue" : "Open"} →</button><button className="delete-icon" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}{!set.drafts.length && <div className="no-drafts"><span>⌁</span><p>No drafts started with this set yet.</p></div>}</div>
@@ -497,6 +562,17 @@ export default function Home() {
           <small>or click to choose files · Player, position and team columns recommended</small>
           <span className="choose-button">Choose CSV files</span>
         </label>
+
+        <div className="online-import">
+          <div className="online-import-copy"><span className="online-badge">LIVE SOURCE</span><h2>Load popular draft data</h2><p>Import current platform ADP as a saved snapshot. It won&apos;t change unless you load it again.</p></div>
+          <div className="online-import-controls">
+            <label><span>Source</span><select value={onlineProvider} onChange={(event) => { const provider = event.target.value as "ffc" | "sleeper" | "espn" | "yahoo"; setOnlineProvider(provider); if (provider === "yahoo") setOnlineFormat("standard"); else if (provider === "espn" && !["standard", "ppr", "superflex"].includes(onlineFormat)) setOnlineFormat("ppr"); else if (provider !== "espn" && onlineFormat === "superflex") setOnlineFormat("2qb"); }}><option value="ffc">Fantasy Football Calculator</option><option value="sleeper">Sleeper</option><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label>
+            <label><span>Scoring format</span><select value={onlineFormat} onChange={(event) => setOnlineFormat(event.target.value)}>{onlineProvider === "yahoo" ? <option value="standard">Standard</option> : onlineProvider === "espn" ? <><option value="standard">Standard</option><option value="ppr">PPR</option><option value="superflex">Superflex</option></> : <><option value="standard">Standard</option><option value="half-ppr">Half-PPR</option><option value="ppr">PPR</option><option value="2qb">2QB</option></>}</select></label>
+            {onlineProvider === "ffc" && <label><span>League size</span><select value={onlineTeams} onChange={(event) => setOnlineTeams(Number(event.target.value))}>{[8, 10, 12, 14].map((count) => <option value={count} key={count}>{count} teams</option>)}</select></label>}
+            <button onClick={loadOnlineRankings} disabled={onlineLoading}>{onlineLoading ? "Loading…" : "Load rankings"}<b>↓</b></button>
+          </div>
+          <small>{onlineProvider === "espn" ? "Rankings reflect ESPN's current preseason draft order." : "ADP measures where players are being selected in real drafts."} Data provided by {onlineProvider === "yahoo" ? "Yahoo" : onlineProvider === "espn" ? "ESPN" : onlineProvider === "sleeper" ? "Sleeper" : "Fantasy Football Calculator"}.{onlineProvider === "yahoo" ? " Yahoo's public draft analysis is currently Standard scoring only." : ""}</small>
+        </div>
 
         <div className="section-heading"><div><h2>Source priority</h2><p>Top source wins when a player appears in more than one list.</p></div><span>{players.length} unique players</span></div>
         <div className="source-list">

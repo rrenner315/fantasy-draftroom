@@ -13,6 +13,16 @@ function writeAtomic(target, contents) {
   fs.renameSync(temporary, target);
 }
 
+function normalizeEspnPlayers(entries, rankType) {
+  const positions = { 1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DEF" };
+  const teams = { 1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN", 8: "DET", 9: "GB", 10: "TEN", 11: "IND", 12: "KC", 13: "LV", 14: "LAR", 15: "MIA", 16: "MIN", 17: "NE", 18: "NO", 19: "NYG", 20: "NYJ", 21: "PHI", 22: "ARI", 23: "PIT", 24: "LAC", 25: "SF", 26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX", 33: "BAL", 34: "HOU" };
+  return entries
+    .map((entry) => ({ entry, rank: Number(entry.player?.draftRanksByRankType?.[rankType]?.rank) }))
+    .filter(({ entry, rank }) => positions[entry.player?.defaultPositionId] && rank > 0 && rank <= 500)
+    .sort((a, b) => a.rank - b.rank)
+    .map(({ entry, rank }) => ({ player_id: entry.player.id, name: entry.player.fullName, position: positions[entry.player.defaultPositionId], team: teams[entry.player.proTeamId] || "FA", adp: rank }));
+}
+
 function openDatabase() {
   const dataPath = app.getPath("userData");
   fs.mkdirSync(dataPath, { recursive: true });
@@ -45,6 +55,63 @@ function registerIpc() {
   ipcMain.handle("draftroom:load-state", () => readState());
   ipcMain.handle("draftroom:save-state", (_event, state) => saveState(state));
   ipcMain.handle("draftroom:storage-info", () => ({ databasePath, backupsPath }));
+  ipcMain.handle("draftroom:load-ffc-rankings", async (_event, format, teams) => {
+    const allowedFormats = new Set(["standard", "half-ppr", "ppr", "2qb"]);
+    const allowedTeams = new Set([8, 10, 12, 14]);
+    if (!allowedFormats.has(format) || !allowedTeams.has(teams)) throw new Error("Unsupported rankings format.");
+    const response = await fetch(`https://fantasyfootballcalculator.com/api/v1/adp/${format}?teams=${teams}&year=${new Date().getFullYear()}`, {
+      headers: { Accept: "application/json", "User-Agent": "The Program fantasy draft app" },
+    });
+    if (!response.ok) throw new Error(`Rankings service returned ${response.status}.`);
+    return response.json();
+  });
+  ipcMain.handle("draftroom:load-sleeper-rankings", async (_event, format) => {
+    const statFields = { standard: "adp_std", "half-ppr": "adp_half_ppr", ppr: "adp_ppr", "2qb": "adp_2qb" };
+    const statField = statFields[format];
+    if (!statField) throw new Error("Unsupported rankings format.");
+    const response = await fetch(`https://api.sleeper.app/projections/nfl/${new Date().getFullYear()}?season_type=regular&order_by=${statField}`, {
+      headers: { Accept: "application/json", "User-Agent": "The Program fantasy draft app" },
+    });
+    if (!response.ok) throw new Error(`Rankings service returned ${response.status}.`);
+    const data = await response.json();
+    const positions = new Set(["QB", "RB", "WR", "TE", "K", "DEF"]);
+    const players = data
+      .filter((entry) => positions.has(entry.player?.position) && Number(entry.stats?.[statField]) > 0 && Number(entry.stats?.[statField]) <= 400)
+      .sort((a, b) => Number(a.stats[statField]) - Number(b.stats[statField]))
+      .map((entry) => ({ player_id: entry.player_id, name: [entry.player.first_name, entry.player.last_name].filter(Boolean).join(" "), position: entry.player.position, team: entry.player.team || entry.team || "FA", adp: Number(entry.stats[statField]) }));
+    return { status: "Success", meta: { type: format }, players };
+  });
+  ipcMain.handle("draftroom:load-espn-rankings", async (_event, format) => {
+    const rankTypes = { standard: "STANDARD", ppr: "PPR", superflex: "SUPERFLEX" };
+    const rankType = rankTypes[format];
+    if (!rankType) throw new Error("Unsupported rankings format.");
+    const filter = JSON.stringify({ players: { limit: 500, sortDraftRanks: { sortPriority: 100, sortAsc: true, value: rankType } } });
+    const response = await fetch(`https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${new Date().getFullYear()}/segments/0/leaguedefaults/1?view=kona_player_info`, {
+      headers: { Accept: "application/json", "User-Agent": "The Program fantasy draft app", "x-fantasy-filter": filter },
+    });
+    if (!response.ok) throw new Error(`Rankings service returned ${response.status}.`);
+    const data = await response.json();
+    return { status: "Success", meta: { type: format }, players: normalizeEspnPlayers(data.players, rankType) };
+  });
+  ipcMain.handle("draftroom:load-yahoo-rankings", async (_event, format) => {
+    if (format !== "standard") throw new Error("Yahoo currently supports Standard ADP only.");
+    const headers = { Accept: "application/json", "User-Agent": "The Program fantasy draft app" };
+    const gameResponse = await fetch("https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2/game/nfl?format=json_f", { headers });
+    if (!gameResponse.ok) throw new Error(`Rankings service returned ${gameResponse.status}.`);
+    const gameData = await gameResponse.json();
+    const gameKey = gameData.fantasy_content?.game?.game_key;
+    if (!gameKey) throw new Error("Yahoo did not return a current fantasy football season.");
+    const resource = `league/${gameKey}.l.public;out=settings/players;position=ALL;start=0;count=400;sort=average_pick;search=;out=auction_values,ranks;ranks=o-rank;out=expert_ranks;expert_ranks.rank_type=projected_season_remaining/draft_analysis;cut_types=diamond;slices=last7days`;
+    const response = await fetch(`https://pub-api-ro.fantasysports.yahoo.com/fantasy/v2/${resource}?format=json_f`, { headers });
+    if (!response.ok) throw new Error(`Rankings service returned ${response.status}.`);
+    const data = await response.json();
+    const players = (data.fantasy_content?.league?.players || [])
+      .map((entry) => ({ entry, adp: Number(entry.player?.draft_analysis?.average_pick) }))
+      .filter(({ entry, adp }) => entry.player?.name?.full && entry.player?.player_id && Number.isFinite(adp) && adp > 0)
+      .sort((a, b) => a.adp - b.adp)
+      .map(({ entry, adp }) => ({ player_id: entry.player.player_id, name: entry.player.name.full, position: entry.player.primary_position || entry.player.display_position || "FLEX", team: entry.player.editorial_team_abbr || "FA", adp }));
+    return { status: "Success", meta: { type: format, season: gameData.fantasy_content?.game?.season }, players };
+  });
   ipcMain.handle("draftroom:export-backup", async () => {
     const state = readState();
     if (!state) return { canceled: true };

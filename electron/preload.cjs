@@ -6,4 +6,8 @@ contextBridge.exposeInMainWorld("draftroomDesktop", {
   exportBackup: () => ipcRenderer.invoke("draftroom:export-backup"),
   importBackup: () => ipcRenderer.invoke("draftroom:import-backup"),
   getStorageInfo: () => ipcRenderer.invoke("draftroom:storage-info"),
+  loadFfcRankings: (format, teams) => ipcRenderer.invoke("draftroom:load-ffc-rankings", format, teams),
+  loadSleeperRankings: (format) => ipcRenderer.invoke("draftroom:load-sleeper-rankings", format),
+  loadEspnRankings: (format) => ipcRenderer.invoke("draftroom:load-espn-rankings", format),
+  loadYahooRankings: (format) => ipcRenderer.invoke("draftroom:load-yahoo-rankings", format),
 });
