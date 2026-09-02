@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import readXlsxFile from "read-excel-file";
 
 type Player = {
   id: string;
@@ -33,6 +34,7 @@ type DesktopApi = {
 
 type FfcPlayer = { player_id: number | string; name: string; position: string; team: string; adp: number };
 type FfcResponse = { status: string; meta?: { type?: string; teams?: number; total_drafts?: number; start_date?: string; end_date?: string }; players: FfcPlayer[] };
+type TierAssignment = { name: string; position: string; tier: number };
 
 declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
@@ -45,6 +47,52 @@ const positionColors: Record<string, string> = {
   DST: "pos-dst",
   DEF: "pos-dst",
 };
+
+const normalizePlayerName = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function positionFromHeader(value: unknown) {
+  const header = String(value ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+  if (header === "QB" || header.includes("QUARTERBACK")) return "QB";
+  if (header === "RB" || header.includes("RUNNINGBACK")) return "RB";
+  if (header === "WR" || header.includes("WIDERECEIVER")) return "WR";
+  if (header === "TE" || header.includes("TIGHTEND")) return "TE";
+  if (header === "K" || header.includes("KICKER")) return "K";
+  if (["DEF", "DST", "DEFENSE"].includes(header)) return "DEF";
+  return null;
+}
+
+function parseTierWorkbookRows(rows: unknown[][]): TierAssignment[] {
+  let headerRow = -1;
+  let positionColumns: { column: number; position: string }[] = [];
+
+  rows.forEach((row, rowIndex) => {
+    const found = row.map((cell, column) => ({ column, position: positionFromHeader(cell) })).filter((item): item is { column: number; position: string } => Boolean(item.position));
+    if (found.length > positionColumns.length) {
+      headerRow = rowIndex;
+      positionColumns = found;
+    }
+  });
+  if (headerRow < 0 || !positionColumns.length) throw new Error("No position columns were found. Add headers such as Quarterback, Running Back, Wide Receiver, or Tight End.");
+
+  const assignments: TierAssignment[] = [];
+  positionColumns.forEach(({ column, position }) => {
+    let tier = 1;
+    let foundPlayer = false;
+    let crossedBlank = false;
+    for (let rowIndex = headerRow + 1; rowIndex < rows.length; rowIndex++) {
+      const name = String(rows[rowIndex]?.[column] ?? "").trim();
+      if (!name) {
+        if (foundPlayer) crossedBlank = true;
+        continue;
+      }
+      if (foundPlayer && crossedBlank) tier++;
+      assignments.push({ name, position, tier });
+      foundPlayer = true;
+      crossedBlank = false;
+    }
+  });
+  return assignments;
+}
 
 function parseCsv(text: string, fileName: string): Player[] {
   const rows: string[][] = [];
@@ -139,6 +187,7 @@ export default function Home() {
   const [onlineTeams, setOnlineTeams] = useState(12);
   const [onlineProvider, setOnlineProvider] = useState<"ffc" | "sleeper" | "espn" | "yahoo">("ffc");
   const [onlineLoading, setOnlineLoading] = useState(false);
+  const [tierFileName, setTierFileName] = useState("");
 
   useEffect(() => {
     let canceled = false;
@@ -220,13 +269,33 @@ export default function Home() {
     const seen = new Set<string>();
     const merged: Player[] = [];
     nextFiles.forEach((file) => file.players.forEach((player) => {
-      const key = player.name.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const key = normalizePlayerName(player.name);
       if (!seen.has(key)) {
         seen.add(key);
         merged.push({ ...player, id: key });
       }
     }));
     setPlayers(merged.map((player, index) => ({ ...player, rank: index + 1 })));
+  };
+
+  const applyTierWorkbook = async (incoming: FileList | null) => {
+    const file = incoming?.[0];
+    if (!file) return;
+    try {
+      const assignments = parseTierWorkbookRows(await readXlsxFile(file) as unknown[][]);
+      const byPositionAndName = new Map(assignments.map((entry) => [`${entry.position}:${normalizePlayerName(entry.name)}`, entry.tier]));
+      const byName = new Map(assignments.map((entry) => [normalizePlayerName(entry.name), entry.tier]));
+      const matched = players.filter((player) => byPositionAndName.has(`${player.position}:${normalizePlayerName(player.name)}`) || byName.has(normalizePlayerName(player.name))).length;
+      if (!matched) throw new Error("None of the spreadsheet players matched the players on this board.");
+      setPlayers((current) => current.map((player) => ({
+        ...player,
+        tier: byPositionAndName.get(`${player.position}:${normalizePlayerName(player.name)}`) ?? byName.get(normalizePlayerName(player.name)) ?? null,
+      })));
+      setTierFileName(file.name);
+      setNotice(`${matched} players received tiers from ${file.name}. ${players.length - matched} unlisted players were set to N/A.`);
+    } catch (error) {
+      setNotice(`${file.name}: ${error instanceof Error ? error.message : "Could not read this tier workbook"}`);
+    }
   };
 
   const addFiles = async (incoming: FileList | null) => {
@@ -572,6 +641,14 @@ export default function Home() {
             <button onClick={loadOnlineRankings} disabled={onlineLoading}>{onlineLoading ? "Loading…" : "Load rankings"}<b>↓</b></button>
           </div>
           <small>{onlineProvider === "espn" ? "Rankings reflect ESPN's current preseason draft order." : "ADP measures where players are being selected in real drafts."} Data provided by {onlineProvider === "yahoo" ? "Yahoo" : onlineProvider === "espn" ? "ESPN" : onlineProvider === "sleeper" ? "Sleeper" : "Fantasy Football Calculator"}.{onlineProvider === "yahoo" ? " Yahoo's public draft analysis is currently Standard scoring only." : ""}</small>
+        </div>
+
+        <div className="tier-import-card">
+          <div><span className="online-badge">CUSTOM TIERS</span><h2>Apply tiers from Excel</h2><p>Use a position-based workbook where blank cells separate tiers. The first player in each position starts Tier 1; players not listed become N/A.</p>{tierFileName && <small>Applied: {tierFileName}</small>}</div>
+          <label className={players.length ? "tier-file-button" : "tier-file-button disabled"}>
+            <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={!players.length} onChange={(event) => { applyTierWorkbook(event.target.files); event.currentTarget.value = ""; }} />
+            <span>Choose tier workbook</span><b>↑</b>
+          </label>
         </div>
 
         <div className="section-heading"><div><h2>Source priority</h2><p>Top source wins when a player appears in more than one list.</p></div><span>{players.length} unique players</span></div>

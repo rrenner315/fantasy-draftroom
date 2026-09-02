@@ -58,3 +58,17 @@ test("includes the online rankings importer and desktop bridge", async () => {
   assert.match(main, /draftroom:load-espn-rankings/);
   assert.match(main, /draftroom:load-yahoo-rankings/);
 });
+
+test("supports Excel workbooks whose blank cells separate position tiers", async () => {
+  const [page, packageJson] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(packageJson, /read-excel-file/);
+  assert.match(page, /parseTierWorkbookRows/);
+  assert.match(page, /crossedBlank/);
+  assert.match(page, /players not listed become N\/A/i);
+  assert.match(page, /Choose tier workbook/);
+  assert.match(page, /tier:.*\?\? null/s);
+});
