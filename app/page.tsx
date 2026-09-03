@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import readXlsxFile from "read-excel-file";
+import readXlsxFile, { readSheetNames } from "read-excel-file";
+import { findAutomaticPlayerMatch, normalizePlayerName, rankPlayerMatches } from "./name-matching.mjs";
+import { parseDelimitedText, parseRankingRows } from "./ranking-parser.mjs";
+import { parseTierRows } from "./tier-parser.mjs";
 
 type Player = {
   id: string;
@@ -16,9 +19,10 @@ type Player = {
 
 type RankingFile = { id: string; name: string; players: Player[] };
 type DraftPick = Player & { pick: number; roster: number };
-type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[] };
+type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
+type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number> };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
-type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string };
+type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
 type DesktopApi = {
   loadState: () => Promise<Record<string, unknown> | null>;
@@ -34,7 +38,9 @@ type DesktopApi = {
 
 type FfcPlayer = { player_id: number | string; name: string; position: string; team: string; adp: number };
 type FfcResponse = { status: string; meta?: { type?: string; teams?: number; total_drafts?: number; start_date?: string; end_date?: string }; players: FfcPlayer[] };
-type TierAssignment = { name: string; position: string; tier: number };
+type TierAssignment = { name: string; position: string; team: string; tier: number };
+type UnresolvedTierMatch = TierAssignment & { id: string; candidates: { id: string; name: string; position: string; team: string; score: number }[] };
+type OnlineProvider = "ffc" | "sleeper" | "espn" | "yahoo";
 
 declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
@@ -48,105 +54,26 @@ const positionColors: Record<string, string> = {
   DEF: "pos-dst",
 };
 
-const normalizePlayerName = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const expertSources: { id: OnlineProvider; name: string; description: string }[] = [
+  { id: "ffc", name: "Fantasy Football Calculator", description: "Draft ADP with league-size options" },
+  { id: "sleeper", name: "Sleeper", description: "Platform ADP across four scoring formats" },
+  { id: "espn", name: "ESPN", description: "ESPN's current preseason draft ranks" },
+  { id: "yahoo", name: "Yahoo", description: "Public Standard-scoring draft ADP" },
+];
 
-function positionFromHeader(value: unknown) {
-  const header = String(value ?? "").toUpperCase().replace(/[^A-Z]/g, "");
-  if (header === "QB" || header.includes("QUARTERBACK")) return "QB";
-  if (header === "RB" || header.includes("RUNNINGBACK")) return "RB";
-  if (header === "WR" || header.includes("WIDERECEIVER")) return "WR";
-  if (header === "TE" || header.includes("TIGHTEND")) return "TE";
-  if (header === "K" || header.includes("KICKER")) return "K";
-  if (["DEF", "DST", "DEFENSE"].includes(header)) return "DEF";
-  return null;
-}
+const formatNames: Record<string, string> = { standard: "Standard", "half-ppr": "Half-PPR", ppr: "PPR", "2qb": "2QB", superflex: "Superflex" };
 
-function parseTierWorkbookRows(rows: unknown[][]): TierAssignment[] {
-  let headerRow = -1;
-  let positionColumns: { column: number; position: string }[] = [];
-
-  rows.forEach((row, rowIndex) => {
-    const found = row.map((cell, column) => ({ column, position: positionFromHeader(cell) })).filter((item): item is { column: number; position: string } => Boolean(item.position));
-    if (found.length > positionColumns.length) {
-      headerRow = rowIndex;
-      positionColumns = found;
-    }
-  });
-  if (headerRow < 0 || !positionColumns.length) throw new Error("No position columns were found. Add headers such as Quarterback, Running Back, Wide Receiver, or Tight End.");
-
-  const assignments: TierAssignment[] = [];
-  positionColumns.forEach(({ column, position }) => {
-    let tier = 1;
-    let foundPlayer = false;
-    let crossedBlank = false;
-    for (let rowIndex = headerRow + 1; rowIndex < rows.length; rowIndex++) {
-      const name = String(rows[rowIndex]?.[column] ?? "").trim();
-      if (!name) {
-        if (foundPlayer) crossedBlank = true;
-        continue;
-      }
-      if (foundPlayer && crossedBlank) tier++;
-      assignments.push({ name, position, tier });
-      foundPlayer = true;
-      crossedBlank = false;
-    }
-  });
-  return assignments;
-}
-
-function parseCsv(text: string, fileName: string): Player[] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let quoted = false;
-  const clean = text.replace(/^\uFEFF/, "");
-
-  for (let i = 0; i < clean.length; i++) {
-    const char = clean[i];
-    if (char === '"' && quoted && clean[i + 1] === '"') {
-      cell += '"';
-      i++;
-    } else if (char === '"') quoted = !quoted;
-    else if (char === "," && !quoted) {
-      row.push(cell.trim());
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !quoted) {
-      if (char === "\r" && clean[i + 1] === "\n") i++;
-      row.push(cell.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = [];
-      cell = "";
-    } else cell += char;
-  }
-  if (cell || row.length) {
-    row.push(cell.trim());
-    rows.push(row);
-  }
-  if (rows.length < 2) return [];
-
-  const headers = rows[0].map((h) => h.toLowerCase());
-  const find = (terms: string[]) => headers.findIndex((h) => terms.some((t) => h === t || h.includes(t)));
-  const nameIndex = find(["player", "name"]);
-  const positionIndex = find(["position", "pos"]);
-  const teamIndex = find(["team"]);
-  let rankIndex = headers.findIndex((h) => h.includes("rank") && !h.includes("diff") && !h.includes("pos"));
-  if (rankIndex < 0) rankIndex = find(["overall", "rk"]);
-  if (nameIndex < 0) throw new Error("No player/name column found");
-
-  return rows.slice(1).map((values, index) => {
-    const sourceRank = Number(values[rankIndex]) || index + 1;
-    const name = values[nameIndex]?.trim();
-    return {
-      id: `${fileName}-${name}-${index}`,
-      name,
-      position: (values[positionIndex] || "FLEX").toUpperCase(),
-      team: (values[teamIndex] || "FA").toUpperCase(),
-      rank: sourceRank,
-      source: fileName.replace(/\.csv$/i, ""),
-      sourceRank,
-      tier: Math.ceil(sourceRank / 12),
-    };
-  }).filter((player) => player.name);
+function rankingRecordsToPlayers(records: { name: string; position: string; team: string; sourceRank: number }[], sourceName: string): Player[] {
+  return records.map((record, index) => ({
+    id: `${sourceName}-${record.name}-${index}`,
+    name: record.name,
+    position: record.position,
+    team: record.team,
+    rank: record.sourceRank,
+    source: sourceName.replace(/\.(csv|tsv|xlsx)$/i, ""),
+    sourceRank: record.sourceRank,
+    tier: Math.ceil(record.sourceRank / 12),
+  }));
 }
 
 function ownerForPick(pick: number, teams: number, snake: boolean) {
@@ -167,8 +94,11 @@ export default function Home() {
   const [mySlot, setMySlot] = useState(4);
   const [snake, setSnake] = useState(true);
   const [picks, setPicks] = useState<DraftPick[]>([]);
+  const [teamNames, setTeamNames] = useState<Record<string, string>>({});
+  const [pickTimerSeconds, setPickTimerSeconds] = useState(0);
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
+  const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers">("rosters");
   const [showAllRankings, setShowAllRankings] = useState(false);
   const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
   const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
@@ -185,9 +115,16 @@ export default function Home() {
   const [saveStatus, setSaveStatus] = useState("Saved locally");
   const [onlineFormat, setOnlineFormat] = useState("half-ppr");
   const [onlineTeams, setOnlineTeams] = useState(12);
-  const [onlineProvider, setOnlineProvider] = useState<"ffc" | "sleeper" | "espn" | "yahoo">("ffc");
+  const [onlineProvider, setOnlineProvider] = useState<OnlineProvider>("ffc");
   const [onlineLoading, setOnlineLoading] = useState(false);
+  const [leagueProvider, setLeagueProvider] = useState<LeagueProvider>("none");
+  const [leagueFormat, setLeagueFormat] = useState("half-ppr");
+  const [platformRanks, setPlatformRanks] = useState<Record<string, number>>({});
+  const [leagueRanksLoading, setLeagueRanksLoading] = useState(false);
+  const [expertImporterOpen, setExpertImporterOpen] = useState(false);
   const [tierFileName, setTierFileName] = useState("");
+  const [unresolvedTierMatches, setUnresolvedTierMatches] = useState<UnresolvedTierMatch[]>([]);
+  const [tierMatchSelections, setTierMatchSelections] = useState<Record<string, string>>( {} );
 
   useEffect(() => {
     let canceled = false;
@@ -213,6 +150,10 @@ export default function Home() {
             setMySlot(savedDraft.mySlot);
             setSnake(savedDraft.snake);
             setPicks(savedDraft.picks || []);
+            setTeamNames(savedDraft.teamNames || {});
+            setLeagueProvider(savedDraft.leagueProvider || "none");
+            setLeagueFormat(savedDraft.leagueFormat || "half-ppr");
+            setPlatformRanks(savedDraft.platformRanks || {});
           }
         } else {
           const setId = `set-${Date.now()}`;
@@ -249,9 +190,9 @@ export default function Home() {
       ...set,
       files,
       players,
-      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks }),
+      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks }),
     }));
-  }, [files, players, teams, mySlot, snake, picks, activeSetId, activeDraftId]);
+  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, activeSetId, activeDraftId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -265,15 +206,20 @@ export default function Home() {
     }
   }, [rankingSets, activeSetId, activeDraftId, step]);
 
+  useEffect(() => {
+    setPickTimerSeconds(0);
+    if (step !== "draft") return;
+    const timer = window.setInterval(() => setPickTimerSeconds((seconds) => seconds + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [step, picks.length]);
+
   const mergeFiles = (nextFiles: RankingFile[]) => {
-    const seen = new Set<string>();
     const merged: Player[] = [];
     nextFiles.forEach((file) => file.players.forEach((player) => {
-      const key = normalizePlayerName(player.name);
-      if (!seen.has(key)) {
-        seen.add(key);
-        merged.push({ ...player, id: key });
-      }
+      if (findAutomaticPlayerMatch(player, merged)) return;
+      const baseId = normalizePlayerName(player.name) || `player-${merged.length + 1}`;
+      const id = merged.some((existing) => existing.id === baseId) ? `${baseId}-${player.position}-${merged.length + 1}` : baseId;
+      merged.push({ ...player, id });
     }));
     setPlayers(merged.map((player, index) => ({ ...player, rank: index + 1 })));
   };
@@ -282,20 +228,66 @@ export default function Home() {
     const file = incoming?.[0];
     if (!file) return;
     try {
-      const assignments = parseTierWorkbookRows(await readXlsxFile(file) as unknown[][]);
-      const byPositionAndName = new Map(assignments.map((entry) => [`${entry.position}:${normalizePlayerName(entry.name)}`, entry.tier]));
-      const byName = new Map(assignments.map((entry) => [normalizePlayerName(entry.name), entry.tier]));
-      const matched = players.filter((player) => byPositionAndName.has(`${player.position}:${normalizePlayerName(player.name)}`) || byName.has(normalizePlayerName(player.name))).length;
-      if (!matched) throw new Error("None of the spreadsheet players matched the players on this board.");
-      setPlayers((current) => current.map((player) => ({
-        ...player,
-        tier: byPositionAndName.get(`${player.position}:${normalizePlayerName(player.name)}`) ?? byName.get(normalizePlayerName(player.name)) ?? null,
-      })));
+      let assignments: TierAssignment[] = [];
+      if (/\.xlsx$/i.test(file.name)) {
+        const sheetNames = await readSheetNames(file);
+        const candidates: TierAssignment[][] = [];
+        for (const sheetName of sheetNames) {
+          try { candidates.push(parseTierRows(await readXlsxFile(file, { sheet: sheetName }) as unknown[][])); } catch { /* Skip notes and cover sheets. */ }
+        }
+        candidates.sort((left, right) => right.length - left.length);
+        if (!candidates.length) throw new Error("No worksheet contained a recognizable tier layout.");
+        assignments = candidates[0];
+      } else {
+        assignments = parseTierRows(parseDelimitedText(await file.text())) as TierAssignment[];
+      }
+      const usedPlayerIds = new Set<string>();
+      const matchedTiers = new Map<string, number>();
+      const unresolved: UnresolvedTierMatch[] = [];
+      assignments.forEach((assignment, index) => {
+        const automatic = findAutomaticPlayerMatch(assignment, players, usedPlayerIds) as Player | null;
+        if (automatic) {
+          usedPlayerIds.add(automatic.id);
+          matchedTiers.set(automatic.id, assignment.tier);
+          return;
+        }
+        const samePosition = players.filter((player) => player.position === assignment.position && !usedPlayerIds.has(player.id));
+        const ranked = rankPlayerMatches(assignment, samePosition).slice(0, 8) as { player: Player; score: number }[];
+        if (ranked[0]?.score >= 0.62) unresolved.push({ ...assignment, id: `tier-match-${index}-${normalizePlayerName(assignment.name)}`, candidates: ranked.map(({ player, score }) => ({ id: player.id, name: player.name, position: player.position, team: player.team, score })) });
+      });
+      if (!matchedTiers.size && !unresolved.length) throw new Error("None of the spreadsheet players matched the players on this board.");
+      setPlayers((current) => current.map((player) => ({ ...player, tier: matchedTiers.get(player.id) ?? null })));
       setTierFileName(file.name);
-      setNotice(`${matched} players received tiers from ${file.name}. ${players.length - matched} unlisted players were set to N/A.`);
+      setUnresolvedTierMatches(unresolved);
+      setTierMatchSelections({});
+      setNotice(unresolved.length ? `${matchedTiers.size} players matched automatically. Review ${unresolved.length} possible name ${unresolved.length === 1 ? "mismatch" : "mismatches"}.` : `${matchedTiers.size} players received tiers from ${file.name}. ${players.length - matchedTiers.size} unlisted players were set to N/A.`);
     } catch (error) {
       setNotice(`${file.name}: ${error instanceof Error ? error.message : "Could not read this tier workbook"}`);
     }
+  };
+
+  const finishTierMatching = () => {
+    const selectedTiers = new Map(unresolvedTierMatches.flatMap((match) => tierMatchSelections[match.id] ? [[tierMatchSelections[match.id], match.tier] as [string, number]] : []));
+    setPlayers((current) => current.map((player) => selectedTiers.has(player.id) ? { ...player, tier: selectedTiers.get(player.id)! } : player));
+    const matchedCount = selectedTiers.size;
+    setUnresolvedTierMatches([]);
+    setTierMatchSelections({});
+    setNotice(`${matchedCount} additional ${matchedCount === 1 ? "name was" : "names were"} matched manually. Unlisted players remain N/A.`);
+  };
+
+  const downloadTierTemplate = (layout: "table" | "positions") => {
+    const csv = layout === "table"
+      ? "Player Name,Position,Team,Tier Number\r\n"
+      : "QB,,,RB,,,WR,,,TE,,\r\nPlayer Name,Team,Tier Number,Player Name,Team,Tier Number,Player Name,Team,Tier Number,Player Name,Team,Tier Number\r\n";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = layout === "table" ? "The-Program-Tier-Template-Player-Table.csv" : "The-Program-Tier-Template-By-Position.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   const addFiles = async (incoming: FileList | null) => {
@@ -303,8 +295,25 @@ export default function Home() {
     const parsed: RankingFile[] = [];
     for (const file of Array.from(incoming)) {
       try {
-        const filePlayers = parseCsv(await file.text(), file.name);
-        if (filePlayers.length) parsed.push({ id: `${file.name}-${Date.now()}`, name: file.name, players: filePlayers });
+        let sourceName = file.name;
+        let parsedRows: { records: { name: string; position: string; team: string; sourceRank: number }[]; columns: Record<string, number> };
+        if (/\.xlsx$/i.test(file.name)) {
+          const sheetNames = await readSheetNames(file);
+          const candidates: { sheetName: string; parsedRows: typeof parsedRows }[] = [];
+          for (const sheetName of sheetNames) {
+            try {
+              candidates.push({ sheetName, parsedRows: parseRankingRows(await readXlsxFile(file, { sheet: sheetName }) as unknown[][]) as typeof parsedRows });
+            } catch { /* A workbook may contain cover or notes sheets without rankings. */ }
+          }
+          candidates.sort((left, right) => right.parsedRows.records.length - left.parsedRows.records.length || Object.keys(right.parsedRows.columns).length - Object.keys(left.parsedRows.columns).length);
+          if (!candidates.length) throw new Error("No worksheet contained a recognizable player-name header and ranking table.");
+          parsedRows = candidates[0].parsedRows;
+          if (sheetNames.length > 1) sourceName = `${file.name} · ${candidates[0].sheetName}`;
+        } else {
+          parsedRows = parseRankingRows(parseDelimitedText(await file.text())) as typeof parsedRows;
+        }
+        const filePlayers = rankingRecordsToPlayers(parsedRows.records, sourceName);
+        parsed.push({ id: `${file.name}-${Date.now()}-${parsed.length}`, name: sourceName, players: filePlayers });
       } catch (error) {
         setNotice(`${file.name}: ${error instanceof Error ? error.message : "Could not read this file"}`);
       }
@@ -312,7 +321,47 @@ export default function Home() {
     const next = [...files, ...parsed];
     setFiles(next);
     mergeFiles(next);
-    if (parsed.length) setNotice(`${parsed.length} file${parsed.length === 1 ? "" : "s"} added. Earlier files take priority.`);
+    if (parsed.length) setNotice(`${parsed.length} ranking ${parsed.length === 1 ? "sheet" : "sheets"} added. Headers were detected automatically; earlier sources take priority.`);
+  };
+
+  const fetchPlatformDefaults = async (provider: Exclude<LeagueProvider, "none">, format: string) => {
+    const endpoint = `/api/rankings/${provider}?format=${encodeURIComponent(format)}`;
+    if (window.draftroomDesktop) {
+      if (provider === "yahoo") return window.draftroomDesktop.loadYahooRankings(format);
+      if (provider === "espn") return window.draftroomDesktop.loadEspnRankings(format);
+      return window.draftroomDesktop.loadSleeperRankings(format);
+    }
+    return fetch(endpoint).then(async (result) => {
+      if (!result.ok) throw new Error(await result.text());
+      return result.json() as Promise<FfcResponse>;
+    });
+  };
+
+  const enterDraftRoom = async () => {
+    if (leagueProvider === "none") {
+      setPlatformRanks({});
+      setStep("draft");
+      return;
+    }
+    setLeagueRanksLoading(true);
+    setNotice(`Loading ${leagueProvider === "espn" ? "ESPN" : leagueProvider === "yahoo" ? "Yahoo" : "Sleeper"} default ranks…`);
+    try {
+      const response = await fetchPlatformDefaults(leagueProvider, leagueFormat);
+      if (!Array.isArray(response.players) || !response.players.length) throw new Error("No default rankings were returned.");
+      const ranks: Record<string, number> = {};
+      response.players.forEach((defaultPlayer) => {
+        const match = findAutomaticPlayerMatch(defaultPlayer, players) as Player | null;
+        if (match) ranks[match.id] = Math.round(Number(defaultPlayer.adp));
+      });
+      setPlatformRanks(ranks);
+      setNotice(`${Object.keys(ranks).length} players matched to the platform's default draft order.`);
+    } catch (error) {
+      setPlatformRanks({});
+      setNotice(`Default rankings could not be loaded: ${error instanceof Error ? error.message : "provider unavailable"}. You can still use the draft room.`);
+    } finally {
+      setLeagueRanksLoading(false);
+      setStep("draft");
+    }
   };
 
   const loadOnlineRankings = async () => {
@@ -361,12 +410,28 @@ export default function Home() {
       mergeFiles(next);
       const draftCount = response.meta?.total_drafts ? ` from ${response.meta.total_drafts.toLocaleString()} drafts` : "";
       setNotice(`${importedPlayers.length} players loaded${draftCount}. This snapshot will stay unchanged until you load a new one.`);
+      setExpertImporterOpen(false);
     } catch {
       const providerName = onlineProvider === "yahoo" ? "Yahoo" : onlineProvider === "espn" ? "ESPN" : onlineProvider === "sleeper" ? "Sleeper" : "Fantasy Football Calculator";
       setNotice(`We couldn't reach ${providerName}. Check your internet connection and try again; your current rankings were not changed.`);
     } finally {
       setOnlineLoading(false);
     }
+  };
+
+  const chooseExpertSource = (provider: OnlineProvider) => {
+    setOnlineProvider(provider);
+    if (provider === "yahoo") setOnlineFormat("standard");
+    else if (provider === "espn" && !["standard", "ppr", "superflex"].includes(onlineFormat)) setOnlineFormat("ppr");
+    else if (provider !== "espn" && onlineFormat === "superflex") setOnlineFormat("2qb");
+  };
+
+  const chooseLeagueProvider = (provider: LeagueProvider) => {
+    setLeagueProvider(provider);
+    setPlatformRanks({});
+    if (provider === "yahoo") setLeagueFormat("standard");
+    else if (provider === "espn" && !["standard", "ppr", "superflex"].includes(leagueFormat)) setLeagueFormat("ppr");
+    else if (provider === "sleeper" && leagueFormat === "superflex") setLeagueFormat("2qb");
   };
 
   const moveFile = (index: number, direction: -1 | 1) => {
@@ -426,11 +491,32 @@ export default function Home() {
 
   const draftedIds = new Set(picks.map((pick) => pick.id));
   const available = useMemo(() => players.filter((player) => !draftedIds.has(player.id)), [players, picks]);
-  const filtered = available.filter((player) => (position === "ALL" || player.position === position) && player.name.toLowerCase().includes(search.toLowerCase())).sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank);
+  const filtered = available.filter((player) => (position === "ALL" || player.position === position || (position === "FLEX" && ["RB", "WR", "TE"].includes(player.position))) && player.name.toLowerCase().includes(search.toLowerCase())).sort((a, b) => a.rank - b.rank);
   const nextPick = picks.length + 1;
   const onClock = ownerForPick(nextPick, teams, snake);
   const round = Math.ceil(nextPick / teams);
+  const pickTimerLabel = `${Math.floor(pickTimerSeconds / 60)}:${String(pickTimerSeconds % 60).padStart(2, "0")}`;
+  const leagueProviderName = leagueProvider === "espn" ? "ESPN" : leagueProvider === "yahoo" ? "Yahoo" : leagueProvider === "sleeper" ? "Sleeper" : "Platform";
+  const teamDisplayName = (team: number) => team === mySlot ? "YOU" : teamNames[String(team)] || `TEAM ${team}`;
+  const marketInsight = (player: Player) => {
+    const platformRank = platformRanks[player.id];
+    if (!platformRank) return null;
+    const difference = platformRank - player.rank;
+    if (Math.abs(difference) < teams) return null;
+    return difference > 0
+      ? { kind: "wait", label: "May last", detail: `${leagueProviderName} #${platformRank}` }
+      : { kind: "early", label: "Going early", detail: `${leagueProviderName} #${platformRank}` };
+  };
+  const strategyBadge = (player: Player) => {
+    const insight = marketInsight(player);
+    return insight ? <span className={`strategy-badge strategy-${insight.kind}`}><b>{insight.label}</b><i>{insight.detail}</i></span> : null;
+  };
   const recommendations = [...available].sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank).slice(0, 5);
+  const tierBoardColumns = ["QB", "RB", "WR", "TE"].map((boardPosition) => {
+    const positionPlayers = available.filter((player) => player.position === boardPosition).sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank);
+    const tiers = Array.from(new Set(positionPlayers.map((player) => player.tier))).sort((left, right) => (left ?? Number.MAX_SAFE_INTEGER) - (right ?? Number.MAX_SAFE_INTEGER));
+    return { position: boardPosition, groups: tiers.map((tier) => ({ tier, players: positionPlayers.filter((player) => player.tier === tier) })) };
+  });
 
   const draftPlayer = (player: Player) => {
     setPicks((current) => [...current, { ...player, pick: nextPick, roster: onClock }]);
@@ -449,12 +535,20 @@ export default function Home() {
       setMySlot(draft.mySlot);
       setSnake(draft.snake);
       setPicks(draft.picks);
+      setTeamNames(draft.teamNames || {});
+      setLeagueProvider(draft.leagueProvider || "none");
+      setLeagueFormat(draft.leagueFormat || "half-ppr");
+      setPlatformRanks(draft.platformRanks || {});
     } else {
       setActiveDraftId("");
       setTeams(12);
       setMySlot(4);
       setSnake(true);
       setPicks([]);
+      setTeamNames({});
+      setLeagueProvider("none");
+      setLeagueFormat("half-ppr");
+      setPlatformRanks({});
     }
     setStep(mode);
     setWorkspaceOpen(false);
@@ -487,6 +581,11 @@ export default function Home() {
     setNameAction({ kind: "rename-draft", setId, draftId: draft.id });
   };
 
+  const renameTeam = (team: number) => {
+    setNameInput(teamNames[String(team)] || `Team ${team}`);
+    setNameAction({ kind: "rename-team", team });
+  };
+
   const submitName = () => {
     const name = nameInput.trim();
     if (!name || !nameAction) return;
@@ -498,7 +597,7 @@ export default function Home() {
     } else if (nameAction.kind === "create-draft") {
       const set = rankingSets.find((item) => item.id === nameAction.setId);
       if (set) {
-        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [] };
+        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {} };
         setRankingSets((current) => current.map((item) => item.id === set.id ? { ...item, drafts: [...item.drafts, draft] } : item));
         setActiveSetId(set.id);
         setActiveDraftId(draft.id);
@@ -508,12 +607,18 @@ export default function Home() {
         setMySlot(draft.mySlot);
         setSnake(draft.snake);
         setPicks([]);
+        setTeamNames({});
+        setLeagueProvider("none");
+        setLeagueFormat("half-ppr");
+        setPlatformRanks({});
         setStep("setup");
       }
     } else if (nameAction.kind === "rename-set") {
       setRankingSets((current) => current.map((item) => item.id === nameAction.setId ? { ...item, name } : item));
-    } else {
+    } else if (nameAction.kind === "rename-draft") {
       setRankingSets((current) => current.map((set) => set.id === nameAction.setId ? { ...set, drafts: set.drafts.map((item) => item.id === nameAction.draftId ? { ...item, name } : item) } : set));
+    } else {
+      setTeamNames((current) => ({ ...current, [String(nameAction.team)]: name }));
     }
     setNameAction(null);
     setNameInput("");
@@ -573,8 +678,8 @@ export default function Home() {
 
   const nameDialog = nameAction && <div className="name-dialog-backdrop" role="presentation" onMouseDown={() => setNameAction(null)}><form className="name-dialog" role="dialog" aria-modal="true" aria-labelledby="name-dialog-title" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => { event.preventDefault(); submitName(); }}>
     <span className="eyebrow">ORGANIZE YOUR DRAFTROOM</span>
-    <h2 id="name-dialog-title">{nameAction.kind === "create-set" ? "Name your rankings set" : nameAction.kind === "create-draft" ? "Name your draft" : nameAction.kind === "rename-set" ? "Rename rankings set" : "Rename draft"}</h2>
-    <p>{nameAction.kind.includes("set") ? "Use a name that describes the scoring or strategy, like Half PPR or 2QB." : "Use a name that helps you recognize the league or draft date."}</p>
+    <h2 id="name-dialog-title">{nameAction.kind === "create-set" ? "Name your rankings set" : nameAction.kind === "create-draft" ? "Name your draft" : nameAction.kind === "rename-set" ? "Rename rankings set" : nameAction.kind === "rename-team" ? "Name this team" : "Rename draft"}</h2>
+    <p>{nameAction.kind === "rename-team" ? "Use the manager's name, team name, or anything else that helps you recognize them." : nameAction.kind.includes("set") ? "Use a name that describes the scoring or strategy, like Half PPR or 2QB." : "Use a name that helps you recognize the league or draft date."}</p>
     <label><span>Name</span><input autoFocus maxLength={60} value={nameInput} onChange={(event) => setNameInput(event.target.value)} /></label>
     <div><button type="button" className="dialog-cancel" onClick={() => setNameAction(null)}>Cancel</button><button type="submit" className="primary" disabled={!nameInput.trim()}>Save name</button></div>
   </form></div>;
@@ -584,6 +689,21 @@ export default function Home() {
     <p>{deleteAction.kind === "set" ? "This removes the rankings, custom tiers, and every draft inside this set." : "This removes the draft settings, pick history, and team rosters. Your rankings set will remain."} This cannot be undone.</p>
     <div><button type="button" className="dialog-cancel" onClick={() => setDeleteAction(null)}>Keep it</button><button type="button" className="danger-button" onClick={confirmDelete}>Delete {deleteAction.kind === "set" ? "rankings set" : "draft"}</button></div>
   </div></div>;
+  const availableFormats = onlineProvider === "yahoo" ? ["standard"] : onlineProvider === "espn" ? ["standard", "ppr", "superflex"] : ["standard", "half-ppr", "ppr", "2qb"];
+  const selectedSource = expertSources.find((source) => source.id === onlineProvider)!;
+  const expertImporterDialog = expertImporterOpen && <div className="expert-import-backdrop" role="presentation" onMouseDown={() => { if (!onlineLoading) setExpertImporterOpen(false); }}><section className="expert-import-dialog" role="dialog" aria-modal="true" aria-labelledby="expert-import-title" onMouseDown={(event) => event.stopPropagation()}>
+    <header><div><span className="online-badge">LIVE RANKING SOURCES</span><h2 id="expert-import-title">Import Expert Ranks</h2><p>Choose a source and format. We&apos;ll save a snapshot you can reorder, tier, and use across drafts.</p></div><button className="expert-dialog-close" aria-label="Close expert rankings importer" disabled={onlineLoading} onClick={() => setExpertImporterOpen(false)}>×</button></header>
+    <div className="expert-dialog-body">
+      <fieldset className="expert-source-step"><legend><span>1</span> Choose a source</legend><div className="expert-source-grid">{expertSources.map((source) => <button type="button" className={source.id === onlineProvider ? "expert-source-option selected" : "expert-source-option"} aria-pressed={source.id === onlineProvider} key={source.id} onClick={() => chooseExpertSource(source.id)}><span className="source-radio" /><div><strong>{source.name}</strong><small>{source.description}</small></div>{source.id === onlineProvider && <b>✓</b>}</button>)}</div></fieldset>
+      <fieldset className="expert-settings-step"><legend><span>2</span> Choose your format</legend><div className="expert-format-options">{availableFormats.map((format) => <button type="button" className={format === onlineFormat ? "selected" : ""} aria-pressed={format === onlineFormat} key={format} onClick={() => setOnlineFormat(format)}>{formatNames[format]}</button>)}</div>{onlineProvider === "ffc" && <div className="expert-team-options"><label>League size</label><div>{[8, 10, 12, 14].map((count) => <button type="button" className={count === onlineTeams ? "selected" : ""} aria-pressed={count === onlineTeams} key={count} onClick={() => setOnlineTeams(count)}>{count} teams</button>)}</div></div>}<p className="expert-source-note">{onlineProvider === "espn" ? "Uses ESPN's current preseason draft order." : onlineProvider === "yahoo" ? "Yahoo currently publishes public draft ADP for Standard scoring only." : "ADP reflects where players are being selected in platform drafts."}</p></fieldset>
+    </div>
+    <footer><div><strong>{selectedSource.name}</strong><small>{formatNames[onlineFormat]}{onlineProvider === "ffc" ? ` · ${onlineTeams} teams` : ""}</small></div><div><button className="dialog-cancel" disabled={onlineLoading} onClick={() => setExpertImporterOpen(false)}>Cancel</button><button className="expert-import-submit" disabled={onlineLoading} onClick={loadOnlineRankings}>{onlineLoading ? "Importing…" : "Import rankings"}<span>↓</span></button></div></footer>
+  </section></div>;
+  const tierMatchDialog = unresolvedTierMatches.length > 0 && <div className="expert-import-backdrop" role="presentation"><section className="tier-match-dialog" role="dialog" aria-modal="true" aria-labelledby="tier-match-title">
+    <header><div><span className="online-badge">REVIEW NAME MATCHES</span><h2 id="tier-match-title">A few names need your help</h2><p>We matched obvious differences automatically. Choose the corresponding player for any remaining tier names you recognize, or leave them unmatched.</p></div><span className="match-count">{unresolvedTierMatches.length}</span></header>
+    <div className="tier-match-list">{unresolvedTierMatches.map((match) => <div className="tier-match-row" key={match.id}><div className="incoming-tier-name"><span>{match.position} · Tier {match.tier}</span><strong>{match.name}</strong><small>{match.team || "Team not provided"} · From tier workbook</small></div><span className="match-arrow">→</span><label><span className="sr-only">Match {match.name} to a ranked player</span><select value={tierMatchSelections[match.id] || ""} onChange={(event) => setTierMatchSelections((current) => ({ ...current, [match.id]: event.target.value }))}><option value="">Leave unmatched</option>{match.candidates.map((candidate) => <option value={candidate.id} key={candidate.id} disabled={Object.entries(tierMatchSelections).some(([matchId, playerId]) => matchId !== match.id && playerId === candidate.id)}>{candidate.name} · {candidate.team} ({Math.round(candidate.score * 100)}% match)</option>)}</select></label></div>)}</div>
+    <footer><button className="dialog-cancel" onClick={() => { setUnresolvedTierMatches([]); setTierMatchSelections({}); setNotice("Unresolved tier names were left unmatched. Unlisted players remain N/A."); }}>Skip these</button><button className="expert-import-submit" onClick={finishTierMatching}>Apply matches <span>✓</span></button></footer>
+  </section></div>;
 
   if (step === "home") return (
     <main className="app-shell home-shell">
@@ -614,6 +734,8 @@ export default function Home() {
     <main className="app-shell setup-shell">
       {nameDialog}
       {deleteDialog}
+      {expertImporterDialog}
+      {tierMatchDialog}
       <header className="topbar">
         <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button>
         <div className="stepper"><span className="active">1 Rankings</span><i /> <span>2 Draft setup</span><i /> <span>3 Draft room</span></div>
@@ -624,31 +746,31 @@ export default function Home() {
         <h1>Your rankings. Your edge.</h1>
         <p className="lede">Stack expert lists in the order you trust them. We&apos;ll use every player from your first source, then fill the gaps from the next.</p>
 
-        <label className="dropzone">
-          <input type="file" accept=".csv,text/csv" multiple onChange={(event) => addFiles(event.target.files)} />
-          <span className="upload-icon">↑</span>
-          <strong>Drop ranking CSVs here</strong>
-          <small>or click to choose files · Player, position and team columns recommended</small>
-          <span className="choose-button">Choose CSV files</span>
-        </label>
+        <div className="ranking-upload-block">
+          <label className="dropzone">
+            <input type="file" accept=".csv,.tsv,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple onChange={(event) => addFiles(event.target.files)} />
+            <span className="upload-icon">↑</span>
+            <strong>Drop ranking sheets here</strong>
+            <small>CSV, TSV, or Excel · We&apos;ll identify the headers and ranking table automatically</small>
+            <span className="choose-button">Choose ranking files</span>
+          </label>
+          <div className="ranking-help"><button type="button" aria-label="Show ranking file requirements">?</button><div role="tooltip"><strong>What does my sheet need?</strong><p><b>Required:</b> a Player, Player Name, or Name column.</p><p><b>Recommended:</b> Position/Pos and Team/TM columns.</p><p><b>Optional:</b> Rank, RK, Overall, or ADP. If it&apos;s missing, row order becomes the ranking.</p><small>Headers can appear below title or notes rows. In Excel files with multiple worksheets, we&apos;ll select the sheet containing the ranking table.</small></div></div>
+        </div>
 
-        <div className="online-import">
-          <div className="online-import-copy"><span className="online-badge">LIVE SOURCE</span><h2>Load popular draft data</h2><p>Import current platform ADP as a saved snapshot. It won&apos;t change unless you load it again.</p></div>
-          <div className="online-import-controls">
-            <label><span>Source</span><select value={onlineProvider} onChange={(event) => { const provider = event.target.value as "ffc" | "sleeper" | "espn" | "yahoo"; setOnlineProvider(provider); if (provider === "yahoo") setOnlineFormat("standard"); else if (provider === "espn" && !["standard", "ppr", "superflex"].includes(onlineFormat)) setOnlineFormat("ppr"); else if (provider !== "espn" && onlineFormat === "superflex") setOnlineFormat("2qb"); }}><option value="ffc">Fantasy Football Calculator</option><option value="sleeper">Sleeper</option><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label>
-            <label><span>Scoring format</span><select value={onlineFormat} onChange={(event) => setOnlineFormat(event.target.value)}>{onlineProvider === "yahoo" ? <option value="standard">Standard</option> : onlineProvider === "espn" ? <><option value="standard">Standard</option><option value="ppr">PPR</option><option value="superflex">Superflex</option></> : <><option value="standard">Standard</option><option value="half-ppr">Half-PPR</option><option value="ppr">PPR</option><option value="2qb">2QB</option></>}</select></label>
-            {onlineProvider === "ffc" && <label><span>League size</span><select value={onlineTeams} onChange={(event) => setOnlineTeams(Number(event.target.value))}>{[8, 10, 12, 14].map((count) => <option value={count} key={count}>{count} teams</option>)}</select></label>}
-            <button onClick={loadOnlineRankings} disabled={onlineLoading}>{onlineLoading ? "Loading…" : "Load rankings"}<b>↓</b></button>
-          </div>
-          <small>{onlineProvider === "espn" ? "Rankings reflect ESPN's current preseason draft order." : "ADP measures where players are being selected in real drafts."} Data provided by {onlineProvider === "yahoo" ? "Yahoo" : onlineProvider === "espn" ? "ESPN" : onlineProvider === "sleeper" ? "Sleeper" : "Fantasy Football Calculator"}.{onlineProvider === "yahoo" ? " Yahoo's public draft analysis is currently Standard scoring only." : ""}</small>
+        <div className="expert-import-launcher">
+          <div className="expert-launch-icon">✦</div><div><span className="online-badge">EXPERT RANKINGS</span><h2>Start with a trusted source</h2><p>Import current rankings from ESPN, Yahoo, Sleeper, or Fantasy Football Calculator.</p></div>
+          <button onClick={() => setExpertImporterOpen(true)}>Import Expert Ranks <span>→</span></button>
         </div>
 
         <div className="tier-import-card">
-          <div><span className="online-badge">CUSTOM TIERS</span><h2>Apply tiers from Excel</h2><p>Use a position-based workbook where blank cells separate tiers. The first player in each position starts Tier 1; players not listed become N/A.</p>{tierFileName && <small>Applied: {tierFileName}</small>}</div>
+          <div><span className="online-badge">CUSTOM TIERS</span><h2>Apply tiers from a sheet</h2><p>We&apos;ll detect common tier layouts automatically. Players not included in the sheet become N/A.</p>{tierFileName && <small>Applied: {tierFileName}</small>}</div>
+          <div className="tier-import-actions"><div className="tier-help"><button type="button" aria-label="Show supported tier sheet formats">?</button><div role="tooltip"><strong>Supported tier formats</strong><p><b>Player table:</b> columns named Player (or Name), Tier, and optionally Position and Team. Players can appear in any order.</p><p><b>Position groups:</b> each position has its own Player Name, Team, and Tier columns.</p><p><b>Blank-separated tiers:</b> QB, RB, WR, and TE columns with a blank space between tiers.</p><p><b>Tier groups:</b> headings such as Tier 1, Tier 2, etc., with player names listed beneath them.</p><small>CSV, TSV, and Excel files are supported. Headers can appear after title or notes rows, and we&apos;ll inspect every worksheet. Including Position improves name matching.</small></div></div>
+          <div className="tier-template-menu"><span>Blank templates</span><button type="button" onClick={() => downloadTierTemplate("table")}>↓ Player table</button><button type="button" onClick={() => downloadTierTemplate("positions")}>↓ By position</button></div>
           <label className={players.length ? "tier-file-button" : "tier-file-button disabled"}>
-            <input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={!players.length} onChange={(event) => { applyTierWorkbook(event.target.files); event.currentTarget.value = ""; }} />
-            <span>Choose tier workbook</span><b>↑</b>
+            <input type="file" accept=".csv,.tsv,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={!players.length} onChange={(event) => { applyTierWorkbook(event.target.files); event.currentTarget.value = ""; }} />
+            <span>Choose tier sheet</span><b>↑</b>
           </label>
+          </div>
         </div>
 
         <div className="section-heading"><div><h2>Source priority</h2><p>Top source wins when a player appears in more than one list.</p></div><span>{players.length} unique players</span></div>
@@ -691,9 +813,10 @@ export default function Home() {
           <label><span>Number of teams</span><select value={teams} onChange={(e) => { setTeams(Number(e.target.value)); setMySlot(Math.min(mySlot, Number(e.target.value))); }}>{[8,10,12,14,16].map(n => <option key={n}>{n}</option>)}</select><small>Common formats: 10 or 12 teams</small></label>
           <label><span>Your draft position</span><select value={mySlot} onChange={(e) => setMySlot(Number(e.target.value))}>{Array.from({length: teams}, (_, i) => i + 1).map(n => <option key={n} value={n}>Pick {n}</option>)}</select><small>Where you&apos;ll pick in round one</small></label>
         </div>
+        <section className="platform-compare-setup"><div className="platform-compare-copy"><span className="online-badge">OPTIONAL DRAFT STRATEGY</span><h2>Compare your board to the room</h2><p>Choose a platform only if you want us to flag players it ranks at least one round earlier or later than you do.</p></div><div className="platform-settings"><label><span>League host</span><select value={leagueProvider} onChange={(event) => chooseLeagueProvider(event.target.value as LeagueProvider)}><option value="none">No comparison</option><option value="sleeper">Sleeper</option><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label>{leagueProvider !== "none" && <label><span>League type</span><select value={leagueFormat} onChange={(event) => { setLeagueFormat(event.target.value); setPlatformRanks({}); }}>{(leagueProvider === "yahoo" ? ["standard"] : leagueProvider === "espn" ? ["standard", "ppr", "superflex"] : ["standard", "half-ppr", "ppr", "2qb"]).map((format) => <option value={format} key={format}>{formatNames[format]}</option>)}</select></label>}</div><small>{leagueProvider === "none" ? "Nothing extra is required—continue with your personal rankings and tiers." : `A snapshot of ${leagueProviderName}'s defaults will be saved with this draft.`}</small></section>
         <fieldset><legend>Draft order</legend><button className={snake ? "choice selected" : "choice"} onClick={() => setSnake(true)}><span className="choice-icon">↝</span><span><strong>Snake draft</strong><small>Order reverses every round</small></span><b>✓</b></button><button className={!snake ? "choice selected" : "choice"} onClick={() => setSnake(false)}><span className="choice-icon">→</span><span><strong>Linear draft</strong><small>Same order every round</small></span><b>✓</b></button></fieldset>
         <div className="seat-preview"><span>Your seat</span><strong>{mySlot}</strong><small>of {teams}</small><i>Round 1: pick {mySlot} · Round 2: pick {snake ? teams * 2 - mySlot + 1 : teams + mySlot}</i></div>
-        <button className="primary full" onClick={() => setStep("draft")}>Enter draft room <span>→</span></button>
+        <button className="primary full" disabled={leagueRanksLoading} onClick={enterDraftRoom}>{leagueRanksLoading ? "Loading league defaults…" : "Enter draft room"} <span>→</span></button>
       </section>
     </main>
   );
@@ -702,17 +825,17 @@ export default function Home() {
     <main className="app-shell draft-shell">
       {nameDialog}
       {deleteDialog}
-      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `TEAM ${onClock} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><small>Round {round}</small></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className="draft-grid">
         <aside className="recommend-panel"><div className="panel-title"><div><span className="eyebrow">YOUR BOARD</span><h2>Best available</h2></div><span>{available.length} left</span></div>
           <div className="recommendations">{recommendations.map((player, index) => <button className="recommend-card" key={player.id} onClick={() => draftPlayer(player)}><span className="recommend-rank">{index + 1}</span><div><strong>{player.name}</strong><small><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span> {player.team} · Tier {tierLabel(player)}</small></div><span className="add-pick">Draft +</span></button>)}</div>
-          <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
-          <div className="player-list">{filtered.slice(0, 60).map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small></div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>+</i></button>)}</div>
+          <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE","FLEX"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
+          <div className="player-list">{filtered.slice(0, 60).map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>+</i></button>)}</div>
         </aside>
-        <section className="board-panel"><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>League rosters</h2></div><span>Round {round} of 16</span></div>
-          <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><span>{team === mySlot ? "YOU" : `TEAM ${team}`}</span>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div>
+        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions"><div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Team Rosters</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
+          {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button>)}</div>)}</div></section>)}</div>}
         </section>
-        <aside className="activity-panel"><div className="panel-title"><div><span className="eyebrow">PICK LOG</span><h2>Latest picks</h2></div><button onClick={undo} disabled={!picks.length}>Undo</button></div><div className="pick-log">{[...picks].reverse().map(p => <div key={p.pick}><b>{p.pick}</b><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>Team {p.roster} · {p.team}</small></div></div>)}{!picks.length && <div className="empty-log"><span>⌁</span><strong>The board is clean</strong><small>Select a player to record pick 1.</small></div>}</div></aside>
+        <aside className="activity-panel"><div className="panel-title"><div><span className="eyebrow">PICK LOG</span><h2>Latest picks</h2></div><button onClick={undo} disabled={!picks.length}>Undo</button></div><div className="pick-log">{[...picks].reverse().map(p => <div key={p.pick}><b>{p.pick}</b><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{teamDisplayName(p.roster)} · {p.team}</small></div></div>)}{!picks.length && <div className="empty-log"><span>⌁</span><strong>The board is clean</strong><small>Select a player to record pick 1.</small></div>}</div></aside>
       </section>
     </main>
   );
