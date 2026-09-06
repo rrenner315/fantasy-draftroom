@@ -173,7 +173,7 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /Team Rosters/);
+  assert.match(page, /Rankings View/);
   assert.match(page, /Tier Board/);
   assert.match(page, /Available by tier/);
   assert.match(page, /tierBoardColumns/);
@@ -272,21 +272,39 @@ test("uses a guided tier import flow", async () => {
   assert.match(css, /tier-step-number/);
 });
 
-test("replaces duplicate recommendations with toggleable draft signals", async () => {
+test("offers signals, watchlist, or no companion panel beside rankings", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /showDraftSignals/);
+  assert.match(page, /sidePanelMode/);
   assert.match(page, /Draft signals/);
-  assert.match(page, /Hide signals/);
-  assert.match(page, /Show signals/);
+  assert.match(page, /Player list companion panel/);
+  assert.match(page, /watchlistIds/);
+  assert.match(page, /toggleWatchlist/);
+  assert.match(page, /Remove from watchlist/);
   assert.match(page, /Tier \$\{cliff\.tier\}/);
   assert.match(page, /selected in the last/);
   assert.match(page, /picksUntilMine/);
+  assert.match(page, /stackOpportunity/);
+  assert.match(page, /Stack \$\{stackOpportunity\.candidate\.name\}/);
+  assert.match(page, /pairs with your/);
   assert.doesNotMatch(page, /const recommendations/);
-  assert.match(css, /signals-hidden/);
+  assert.match(css, /side-panel-toggle/);
+  assert.match(css, /draft-watchlist/);
   assert.match(css, /draft-signal-list/);
+  assert.match(css, /signal-stack/);
   assert.match(css, /\.recommend-panel \.player-list\{flex:1 1 auto/);
+});
+
+test("uses the entire draft workspace for the tier board", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /draftCenterView === "tiers" \? "draft-grid tier-view"/);
+  assert.match(css, /\.draft-grid\.tier-view\{grid-template-columns:1fr\}/);
+  assert.match(css, /\.tier-view>\.recommend-panel,\.tier-view>\.activity-panel\{display:none\}/);
 });

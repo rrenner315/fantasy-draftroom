@@ -20,7 +20,7 @@ type Player = {
 type RankingFile = { id: string; name: string; players: Player[] };
 type DraftPick = Player & { pick: number; roster: number };
 type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
-type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number> };
+type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[] };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
@@ -99,7 +99,8 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
   const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers">("rosters");
-  const [showDraftSignals, setShowDraftSignals] = useState(true);
+  const [sidePanelMode, setSidePanelMode] = useState<"none" | "signals" | "watchlist">("signals");
+  const [watchlistIds, setWatchlistIds] = useState<string[]>([]);
   const [showAllRankings, setShowAllRankings] = useState(false);
   const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
   const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
@@ -156,6 +157,7 @@ export default function Home() {
             setLeagueProvider(savedDraft.leagueProvider || "none");
             setLeagueFormat(savedDraft.leagueFormat || "half-ppr");
             setPlatformRanks(savedDraft.platformRanks || {});
+            setWatchlistIds(savedDraft.watchlistIds || []);
           }
         } else {
           const setId = `set-${Date.now()}`;
@@ -192,9 +194,9 @@ export default function Home() {
       ...set,
       files,
       players,
-      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks }),
+      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds }),
     }));
-  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, activeSetId, activeDraftId]);
+  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, activeSetId, activeDraftId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -494,6 +496,7 @@ export default function Home() {
 
   const draftedIds = new Set(picks.map((pick) => pick.id));
   const available = useMemo(() => players.filter((player) => !draftedIds.has(player.id)), [players, picks]);
+  const watchlist = available.filter((player) => watchlistIds.includes(player.id)).sort((a, b) => a.rank - b.rank);
   const filtered = available.filter((player) => (position === "ALL" || player.position === position || (position === "FLEX" && ["RB", "WR", "TE"].includes(player.position))) && player.name.toLowerCase().includes(search.toLowerCase())).sort((a, b) => a.rank - b.rank);
   const nextPick = picks.length + 1;
   const onClock = ownerForPick(nextPick, teams, snake);
@@ -526,6 +529,13 @@ export default function Home() {
     return remaining.length <= 3 ? [{ position: signalPosition, tier: topTier, remaining }] : [];
   }).sort((left, right) => left.remaining.length - right.remaining.length).slice(0, 2);
   tierCliffs.forEach((cliff) => draftSignals.push({ kind: "cliff", title: `${cliff.remaining.length === 1 ? "Last" : cliff.remaining.length} Tier ${cliff.tier} ${cliff.position}${cliff.remaining.length === 1 ? "" : "s"}`, detail: cliff.remaining.map((player) => player.name).join(" · ") }));
+  const myRosterPicks = picks.filter((pick) => pick.roster === mySlot);
+  const upcomingPlayers = [...available].sort((left, right) => left.rank - right.rank).slice(0, Math.max(teams * 2, 20));
+  const stackOpportunity = upcomingPlayers.map((candidate) => {
+    const partner = myRosterPicks.find((owned) => owned.team && owned.team === candidate.team && ((owned.position === "QB" && ["WR", "TE"].includes(candidate.position)) || (candidate.position === "QB" && ["WR", "TE"].includes(owned.position))));
+    return partner ? { candidate, partner } : null;
+  }).find((pair) => pair !== null);
+  if (stackOpportunity) draftSignals.push({ kind: "stack", title: `Stack ${stackOpportunity.candidate.name}`, detail: `${stackOpportunity.candidate.position} pairs with your ${stackOpportunity.partner.name} · ${stackOpportunity.candidate.team}` });
   const recentPicks = picks.slice(-8);
   const recentRun = ["RB", "WR", "QB", "TE"].map((runPosition) => ({ position: runPosition, count: recentPicks.filter((pick) => pick.position === runPosition).length })).sort((left, right) => right.count - left.count)[0];
   if (recentRun?.count >= 3) draftSignals.push({ kind: "run", title: `${recentRun.position} run`, detail: `${recentRun.count} selected in the last ${recentPicks.length} picks` });
@@ -540,8 +550,11 @@ export default function Home() {
 
   const draftPlayer = (player: Player) => {
     setPicks((current) => [...current, { ...player, pick: nextPick, roster: onClock }]);
+    setWatchlistIds((current) => current.filter((id) => id !== player.id));
     setSearch("");
   };
+
+  const toggleWatchlist = (player: Player) => setWatchlistIds((current) => current.includes(player.id) ? current.filter((id) => id !== player.id) : [...current, player.id]);
 
   const undo = () => setPicks((current) => current.slice(0, -1));
 
@@ -559,6 +572,7 @@ export default function Home() {
       setLeagueProvider(draft.leagueProvider || "none");
       setLeagueFormat(draft.leagueFormat || "half-ppr");
       setPlatformRanks(draft.platformRanks || {});
+      setWatchlistIds(draft.watchlistIds || []);
     } else {
       setActiveDraftId("");
       setTeams(12);
@@ -569,6 +583,7 @@ export default function Home() {
       setLeagueProvider("none");
       setLeagueFormat("half-ppr");
       setPlatformRanks({});
+      setWatchlistIds([]);
     }
     setStep(mode);
     setWorkspaceOpen(false);
@@ -617,7 +632,7 @@ export default function Home() {
     } else if (nameAction.kind === "create-draft") {
       const set = rankingSets.find((item) => item.id === nameAction.setId);
       if (set) {
-        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {} };
+        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [] };
         setRankingSets((current) => current.map((item) => item.id === set.id ? { ...item, drafts: [...item.drafts, draft] } : item));
         setActiveSetId(set.id);
         setActiveDraftId(draft.id);
@@ -631,6 +646,7 @@ export default function Home() {
         setLeagueProvider("none");
         setLeagueFormat("half-ppr");
         setPlatformRanks({});
+        setWatchlistIds([]);
         setStep("setup");
       }
     } else if (nameAction.kind === "rename-set") {
@@ -687,9 +703,9 @@ export default function Home() {
       {desktopMode && <div className="backup-tools"><button onClick={exportBackup}><span>⇧</span> Export backup</button><button onClick={importBackup}><span>⇩</span> Restore backup</button></div>}
       <div className="menu-divider"><span>RANKINGS & DRAFTS</span></div>
       {rankingSets.map((set) => <div className={set.id === activeSetId ? "workspace-set active" : "workspace-set"} key={set.id}>
-        <div className="workspace-set-head"><strong>{set.name}</strong><div className="workspace-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
+        <div className="workspace-set-head"><strong>{set.name}</strong><div className="workspace-item-actions"><button title="Rename rankings set" aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" title="Delete rankings set" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
         <div className="workspace-links"><button onClick={() => openRankingSet(set, "rankings")}><span>✦</span> Edit rankings <small>{set.players.length} players</small></button>
-          {set.drafts.map((draft) => <div className={draft.id === activeDraftId ? "workspace-draft selected" : "workspace-draft"} key={draft.id}><button onClick={() => openRankingSet(set, "draft", draft)}><span>▦</span> {draft.name}<small>{draft.picks.length} picks</small></button><div className="workspace-item-actions"><button aria-label={`Rename ${draft.name}`} onClick={() => renameDraft(set.id, draft)}>✎</button><button className="delete-icon" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}
+          {set.drafts.map((draft) => <div className={draft.id === activeDraftId ? "workspace-draft selected" : "workspace-draft"} key={draft.id}><button onClick={() => openRankingSet(set, "draft", draft)}><span>▦</span> {draft.name}<small>{draft.picks.length} picks</small></button><div className="workspace-item-actions"><button title="Rename draft" aria-label={`Rename ${draft.name}`} onClick={() => renameDraft(set.id, draft)}>✎</button><button className="delete-icon" title="Delete draft" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}
           <button className="new-draft-link" onClick={() => createDraft(set)}><span>＋</span> New draft</button>
         </div>
       </div>)}
@@ -747,10 +763,10 @@ export default function Home() {
         <div className="home-section-head"><div><h2>Ranking sets</h2><p>Each set includes its ranking sources, player order, tiers, and drafts.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
         <div className="ranking-set-grid">
           {rankingSets.map((set) => <article className="ranking-home-card" key={set.id}>
-            <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} ranking {set.files.length === 1 ? "source" : "sources"}</p></div><div className="card-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
+            <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} ranking {set.files.length === 1 ? "source" : "sources"}</p></div><div className="card-item-actions"><button title="Rename rankings set" aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" title="Delete rankings set" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
             <div className="ranking-card-actions"><button onClick={() => openRankingSet(set, "rankings")}><span>✦</span><div><strong>Edit rankings</strong><small>Sources, order & tiers</small></div><b>→</b></button><button onClick={() => createDraft(set)} disabled={!set.players.length}><span>＋</span><div><strong>Start new draft</strong><small>{set.players.length ? "Use this ranking set" : "Add rankings first"}</small></div><b>→</b></button></div>
             <div className="card-drafts-head"><span>DRAFTS</span><small>{set.drafts.length}</small></div>
-            <div className="home-draft-list">{set.drafts.map((draft) => <div className="home-draft-row" key={draft.id}><span className="draft-status">{draft.picks.length ? "LIVE" : "NEW"}</span><div><strong>{draft.name}</strong><small>{draft.teams} teams · Pick {draft.picks.length + 1} · {draft.snake ? "Snake" : "Linear"}</small></div><div className="draft-row-actions"><button onClick={() => openRankingSet(set, "draft", draft)}>{draft.picks.length ? "Continue" : "Open"} →</button><button className="delete-icon" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}{!set.drafts.length && <div className="no-drafts"><span>⌁</span><p>No drafts started with this set yet.</p></div>}</div>
+            <div className="home-draft-list">{set.drafts.map((draft) => <div className="home-draft-row" key={draft.id}><span className="draft-status">{draft.picks.length ? "LIVE" : "NEW"}</span><div><strong>{draft.name}</strong><small>{draft.teams} teams · Pick {draft.picks.length + 1} · {draft.snake ? "Snake" : "Linear"}</small></div><div className="draft-row-actions"><button onClick={() => openRankingSet(set, "draft", draft)}>{draft.picks.length ? "Continue" : "Open"} →</button><button className="delete-icon" title="Delete draft" aria-label={`Delete ${draft.name}`} onClick={() => setDeleteAction({ kind: "draft", setId: set.id, draftId: draft.id, name: draft.name })}>×</button></div></div>)}{!set.drafts.length && <div className="no-drafts"><span>⌁</span><p>No drafts started with this set yet.</p></div>}</div>
           </article>)}
           <button className="new-set-card" onClick={createRankingSet}><span>＋</span><strong>Create rankings set</strong><small>Upload a different package for 2QB, PPR, dynasty, or another format.</small></button>
         </div>
@@ -803,7 +819,7 @@ export default function Home() {
             <div className="source-card" key={file.id}>
               <span className="drag">⋮⋮</span><span className="priority">{index + 1}</span>
               <div className="source-copy"><strong>{file.name.replace(/\.csv$/i, "")}</strong><small>{file.players.length} players · Priority {index + 1}</small></div>
-              <div className="source-actions"><button aria-label="Move up" onClick={() => moveFile(index, -1)}>↑</button><button aria-label="Move down" onClick={() => moveFile(index, 1)}>↓</button><button aria-label="Remove" onClick={() => removeFile(file.id)}>×</button></div>
+              <div className="source-actions"><button title="Move source up" aria-label="Move up" onClick={() => moveFile(index, -1)}>↑</button><button title="Move source down" aria-label="Move down" onClick={() => moveFile(index, 1)}>↓</button><button title="Remove source" aria-label="Remove" onClick={() => removeFile(file.id)}>×</button></div>
             </div>
           ))}
         </div>
@@ -849,14 +865,15 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
-      <section className="draft-grid">
-        <aside className={showDraftSignals ? "recommend-panel signals-visible" : "recommend-panel signals-hidden"}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><button className={showDraftSignals ? "signals-toggle active" : "signals-toggle"} aria-pressed={showDraftSignals} onClick={() => setShowDraftSignals((visible) => !visible)}>{showDraftSignals ? "Hide signals" : "Show signals"}</button></div>
-          {showDraftSignals && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}
+      <section className={draftCenterView === "tiers" ? "draft-grid tier-view" : "draft-grid"}>
+        <aside className={`recommend-panel side-panel-${sidePanelMode}`}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><div className="side-panel-toggle" role="group" aria-label="Player list companion panel">{(["none", "signals", "watchlist"] as const).map((mode) => <button className={sidePanelMode === mode ? "active" : ""} aria-pressed={sidePanelMode === mode} onClick={() => setSidePanelMode(mode)} key={mode}>{mode === "none" ? "None" : mode === "signals" ? "Signals" : `Watchlist${watchlist.length ? ` ${watchlist.length}` : ""}`}</button>)}</div></div>
+          {sidePanelMode === "signals" && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : signal.kind === "stack" ? "⌁" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}
+          {sidePanelMode === "watchlist" && <section className="draft-watchlist" aria-label="Player watchlist"><div className="draft-signals-heading"><strong>Watchlist</strong><small>{watchlist.length} available</small></div>{watchlist.length ? <div className="watchlist-players">{watchlist.map((player) => <div className="watchlist-player" key={player.id}><button className="watchlist-draft" onClick={() => draftPlayer(player)}><b>{player.rank}</b><span><strong>{player.name}</strong><small>{player.position} · {player.team} · Tier {tierLabel(player)}</small></span><i>＋</i></button><button className="watch-toggle active" title="Remove from watchlist" aria-label={`Remove ${player.name} from watchlist`} onClick={() => toggleWatchlist(player)}>★</button></div>)}</div> : <div className="watchlist-empty"><span>☆</span><strong>No players watched yet</strong><small>Use the star beside a player to add them.</small></div>}</section>}
           <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE","FLEX"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
-          <div className="player-list">{filtered.slice(0, 60).map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>+</i></button>)}</div>
+          <div className="player-list">{filtered.slice(0, 60).map((player) => <div className="player-list-row" key={player.id}><button className="player-draft-action" onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>＋</i></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>
         </aside>
-        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions"><div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Team Rosters</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
-          {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button>)}</div>)}</div></section>)}</div>}
+        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions"><div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Rankings View</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
+          {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <div className="tier-player-row" key={player.id}><button className="tier-draft-action" onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>)}</div></section>)}</div>}
         </section>
         <aside className="activity-panel"><div className="panel-title"><div><span className="eyebrow">PICK LOG</span><h2>Latest picks</h2></div><button onClick={undo} disabled={!picks.length}>Undo</button></div><div className="pick-log">{[...picks].reverse().map(p => <div key={p.pick}><b>{p.pick}</b><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{teamDisplayName(p.roster)} · {p.team}</small></div></div>)}{!picks.length && <div className="empty-log"><span>⌁</span><strong>The board is clean</strong><small>Select a player to record pick 1.</small></div>}</div></aside>
       </section>
