@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Three visible rows in compact assistant panels; additional items scroll. */
+.draft-signals,.draft-watchlist,.draft-roster-panel{flex-basis:180px!important;height:180px!important}
+
 :root { --ink:#f2f3f2; --muted:#9ba19d; --paper:#070808; --card:#191b1a; --line:#343735; --green:#d5d8d6; --lime:#ff6b3d; --orange:#ff6b3d; color-scheme:dark; }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--paper); color:var(--ink); font-family:Arial, Helvetica, sans-serif; }

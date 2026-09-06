@@ -251,8 +251,8 @@ test("optionally compares personal ranks with league-platform defaults", async (
   assert.match(page, /<option value="none">No comparison<\/option>/);
   assert.match(page, /useState<LeagueProvider>\("none"\)/);
   assert.match(page, /Math\.abs\(difference\) < teams/);
-  assert.match(page, /May last/);
-  assert.match(page, /Going early/);
+  assert.match(page, /Ranking discrepancy/);
+  assert.match(page, /rank discrepancy/);
   assert.match(page, /platformRanks/);
   assert.match(page, /fetchPlatformDefaults/);
   assert.match(css, /strategy-wait/);
@@ -379,8 +379,7 @@ test("configures and displays the user's roster", async () => {
   assert.match(page, /compact-lineup-slots/);
   assert.match(route, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
   assert.match(main, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
-  assert.match(css, /\.draft-watchlist,\.draft-roster-panel\{[^}]*height:228px;overflow:auto/);
-  assert.match(css, /\.draft-signals\{[^}]*height:228px;overflow:auto/);
+  assert.match(css, /\.draft-signals,\.draft-watchlist,\.draft-roster-panel\{[^}]*height:180px/);
   assert.match(css, /\.compact-lineup-slots/);
   assert.match(css, /\.roster-position-grid/);
 });

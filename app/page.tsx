@@ -685,9 +685,11 @@ export default function Home() {
     if (!platformRank) return null;
     const difference = platformRank - player.rank;
     if (Math.abs(difference) < teams) return null;
-    return difference > 0
-      ? { kind: "wait", label: "May last", detail: `${leagueProviderName} #${platformRank}` }
-      : { kind: "early", label: "Going early", detail: `${leagueProviderName} #${platformRank}` };
+    return {
+      kind: difference > 0 ? "wait" : "early",
+      label: "Ranking discrepancy",
+      detail: `${leagueProviderName} #${platformRank}`,
+    };
   };
   const strategyBadge = (player: Player) => {
     const insight = marketInsight(player);
@@ -742,7 +744,7 @@ export default function Home() {
   const recentRun = ["RB", "WR", "QB", "TE"].map((runPosition) => ({ position: runPosition, count: recentPicks.filter((pick) => pick.position === runPosition).length })).sort((left, right) => right.count - left.count)[0];
   if (recentRun?.count >= 3) draftSignals.push({ kind: "run", title: `${recentRun.position} run`, detail: `${recentRun.count} selected in the last ${recentPicks.length} picks` });
   const valueOpportunity = available.filter((player) => platformRanks[player.id] - player.rank >= teams).sort((left, right) => (platformRanks[right.id] - right.rank) - (platformRanks[left.id] - left.rank))[0];
-  if (valueOpportunity) draftSignals.push({ kind: "value", title: `${valueOpportunity.name} may last`, detail: `Your rank #${valueOpportunity.rank} · ${leagueProviderName} #${platformRanks[valueOpportunity.id]}` });
+  if (valueOpportunity) draftSignals.push({ kind: "value", title: `${valueOpportunity.name} rank discrepancy`, detail: `Your rank #${valueOpportunity.rank} · ${leagueProviderName} #${platformRanks[valueOpportunity.id]}` });
   draftSignals.push({ kind: "clock", title: picksUntilMine === 0 ? "You are on the clock" : `${picksUntilMine} ${picksUntilMine === 1 ? "pick" : "picks"} until your turn`, detail: picksUntilMine === 0 ? `Pick ${nextPick} · Round ${round}` : `Your next selection is pick ${nextUserPick}` });
   const tierBoardColumns = ["QB", "RB", "WR", "TE"].map((boardPosition) => {
     const positionPlayers = available.filter((player) => player.position === boardPosition).sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank);
