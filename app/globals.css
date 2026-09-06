@@ -181,10 +181,11 @@ body{background:radial-gradient(circle at 50% -20%,#172554 0,#0b1424 34%,#09111f
 .tier-view>.tier-board-panel{grid-column:1/-1;width:100%;padding:22px 24px}
 .tier-view .draft-tier-board{grid-template-columns:repeat(4,minmax(210px,1fr));min-width:860px;gap:12px}
 .player-list-title{align-items:flex-start;gap:10px;flex-direction:column}
-.side-panel-toggle{display:grid;grid-template-columns:repeat(3,1fr);width:100%;padding:3px;background:#101b2b;border:1px solid #33465e;border-radius:8px}
+.side-panel-toggle{display:grid;grid-template-columns:repeat(4,1fr);width:100%;padding:3px;background:#101b2b;border:1px solid #33465e;border-radius:8px}
 .side-panel-toggle button{min-height:30px;padding:0 6px;background:transparent;border:0;border-radius:5px;color:#8493a7;font-size:8px;font-weight:900;cursor:pointer}
 .side-panel-toggle button:hover{color:#dbeafe}.side-panel-toggle button.active{background:#203653;color:#bfdbfe;box-shadow:0 1px 5px #02061766}
 .draft-watchlist{flex:0 0 auto;max-height:43%;overflow:auto;margin:0 -3px 2px;padding:11px;background:#0c1625;border:1px solid #2d4058;border-radius:9px}
+.draft-roster-panel{flex:0 0 auto;max-height:43%;overflow:auto;margin:0 -3px 2px;padding:11px;background:#0c1625;border:1px solid #2d4058;border-radius:9px}.compact-lineup-slots{display:grid;gap:5px}.compact-lineup-slot{display:grid;grid-template-columns:42px 1fr;align-items:center;gap:8px;min-height:42px;padding:6px 8px;background:#111e30;border:1px dashed #304158;border-radius:6px}.compact-lineup-slot.filled{background:#172842;border-style:solid;border-color:#3d5778}.compact-lineup-slot>span{display:grid;place-items:center;height:27px;background:#203653;border-radius:5px;color:#93c5fd;font-size:8px;font-weight:950}.compact-lineup-slot>div{display:grid;gap:2px;min-width:0}.compact-lineup-slot strong{overflow:hidden;text-overflow:ellipsis;color:#e5edf8;font-size:9px;white-space:nowrap}.compact-lineup-slot:not(.filled) strong{color:#8291a5}.compact-lineup-slot small{color:#718197;font-size:7px}
 .watchlist-players{display:grid;gap:5px}.watchlist-player,.player-list-row,.tier-player-row{display:grid;grid-template-columns:minmax(0,1fr) 34px;align-items:stretch}
 .watchlist-player{overflow:hidden;background:#142136;border:1px solid #263951;border-radius:7px}
 .watchlist-draft{display:grid;grid-template-columns:24px minmax(0,1fr) 18px;align-items:center;gap:7px;min-height:45px;padding:6px 8px;background:transparent;border:0;color:var(--ink);text-align:left;cursor:pointer}
