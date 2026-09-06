@@ -3,6 +3,7 @@ const headerAliases = {
   position: new Set(["position", "pos", "playerposition", "rosterposition"]),
   team: new Set(["team", "tm", "nflteam", "club", "proteam"]),
   rank: new Set(["rank", "rk", "overall", "overallrank", "myrank", "consensusrank", "adp", "avgpick", "averagepick"]),
+  bye: new Set(["bye", "byeweek", "weekoff", "offweek"]),
 };
 
 const cleanHeader = (value) => String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -15,6 +16,7 @@ function headerType(value) {
   if (header.includes("position") && !header.includes("rank")) return "position";
   if (header.includes("team") && !header.includes("rank")) return "team";
   if ((header.includes("rank") || header.includes("overall") || header === "adp") && !header.includes("position") && !header.startsWith("pos")) return "rank";
+  if (header.includes("bye")) return "bye";
   return null;
 }
 
@@ -59,6 +61,7 @@ export function parseRankingRows(rows) {
       name,
       position: columns.position === undefined ? "FLEX" : normalizePosition(row?.[columns.position]),
       team: columns.team === undefined ? "FA" : String(row?.[columns.team] ?? "FA").trim().toUpperCase() || "FA",
+      byeWeek: columns.bye === undefined ? null : numericRank(row?.[columns.bye]),
       sourceRank: rank && rank > 0 ? rank : records.length + 1,
       rowNumber: rowIndex + rowOffset + 2,
     });

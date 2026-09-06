@@ -161,6 +161,9 @@ test("discovers ranking tables with varied headers and optional rank columns", a
   const withoutRank = parseRankingRows(parseDelimitedText("Notes about this list\nName;Position;Team\nPuka Nacua;WR;LAR\nBijan Robinson;RB;ATL"));
   assert.deepEqual(withoutRank.records.map((player) => player.sourceRank), [1, 2]);
 
+  const withBye = parseRankingRows(parseDelimitedText("Rank,Player,Pos,Team,Bye Week\n1,Ja'Marr Chase,WR,CIN,10"));
+  assert.equal(withBye.records[0].byeWeek, 10);
+
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.match(page, /CSV, TSV, or Excel/);
   assert.match(page, /What does my sheet need\?/);
@@ -270,11 +273,25 @@ test("lets users rename opponent teams within each draft", async () => {
   assert.match(css, /roster-team-name/);
 });
 
-test("offers a FLEX player filter for RB, WR, and TE", async () => {
+test("offers filters for every fantasy position", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
   assert.match(page, /position === "FLEX" && \["RB", "WR", "TE"\]\.includes\(player\.position\)/);
-  assert.match(page, /\["ALL","RB","WR","QB","TE","FLEX"\]/);
+  assert.match(page, /\["ALL","QB","RB","WR","TE","FLEX","K","D\/ST"\]/);
+  assert.match(page, /position === "D\/ST" && \["DST", "DEF"\]\.includes\(player\.position\)/);
+});
+
+test("drafts players only from the plus control and shows bye weeks", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /className="draft-plus" aria-label=\{`Draft \$\{player\.name\}`\}/);
+  assert.doesNotMatch(page, /className="player-draft-action" onClick/);
+  assert.match(page, /Bye \$\{player\.byeWeek\}/);
+  assert.match(css, /\.draft-plus\{/);
+  assert.match(css, /\.draft-topbar \.workspace-switcher\{z-index:110\}/);
 });
 
 test("uses the blue and slate visual theme", async () => {
