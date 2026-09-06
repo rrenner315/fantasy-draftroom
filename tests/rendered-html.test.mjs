@@ -274,11 +274,16 @@ test("lets users rename opponent teams within each draft", async () => {
 });
 
 test("offers filters for every fantasy position", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
 
   assert.match(page, /position === "FLEX" && \["RB", "WR", "TE"\]\.includes\(player\.position\)/);
-  assert.match(page, /\["ALL","QB","RB","WR","TE","FLEX","K","D\/ST"\]/);
+  assert.match(page, /const positionFilters = \["ALL", \.\.\.Array\.from\(new Set\(rosterPositions/);
   assert.match(page, /position === "D\/ST" && \["DST", "DEF"\]\.includes\(player\.position\)/);
+  assert.match(page, /position === "SFLEX" && \["QB", "RB", "WR", "TE"\]\.includes\(player\.position\)/);
+  assert.match(css, /\.player-list \.player-draft-action\{display:grid/);
 });
 
 test("drafts players only from the plus control and shows bye weeks", async () => {
