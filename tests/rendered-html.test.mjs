@@ -174,6 +174,7 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
   ]);
 
   assert.match(page, /Draft Board/);
+  assert.match(page, /Roster View/);
   assert.match(page, /Tier Board/);
   assert.match(page, /Available by tier/);
   assert.match(page, /tierBoardColumns/);
@@ -184,6 +185,20 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
   assert.match(css, /tier-column-rb/);
   assert.match(css, /tier-column-wr/);
   assert.match(css, /tier-column-te/);
+});
+
+test("shows a team-column draft board", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /draftCenterView === "board"/);
+  assert.match(page, /true-draft-board/);
+  assert.match(page, /draft-team-column/);
+  assert.match(page, /picks\.filter\(\(pick\) => pick\.roster === team\)/);
+  assert.match(css, /\.true-draft-board\{[^}]*grid-auto-flow:column/);
+  assert.match(css, /\.draft-team-column/);
 });
 
 test("collapses individual team rosters on the draft board", async () => {
@@ -313,15 +328,15 @@ test("offers signals, watchlist, or no companion panel beside rankings", async (
   assert.match(css, /\.recommend-panel \.player-list\{flex:1 1 auto/);
 });
 
-test("uses the entire draft workspace for the tier board", async () => {
+test("keeps the rankings panel visible for tier and draft boards", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /draftCenterView === "tiers" \? "draft-grid tier-view"/);
-  assert.match(css, /\.draft-grid\.tier-view\{grid-template-columns:1fr\}/);
-  assert.match(css, /\.tier-view>\.recommend-panel,\.tier-view>\.activity-panel\{display:none\}/);
+  assert.match(page, /className=\{`draft-grid draft-view-\$\{draftCenterView\}`\}/);
+  assert.doesNotMatch(page, /draft-grid tier-view/);
+  assert.match(css, /\.draft-tier-board/);
 });
 
 test("configures and displays the user's roster", async () => {
