@@ -326,7 +326,8 @@ test("configures and displays the user's roster", async () => {
   assert.match(page, /compact-lineup-slots/);
   assert.match(route, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
   assert.match(main, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
-  assert.match(css, /\.draft-roster-panel\{[^}]*max-height:43%;overflow:auto/);
+  assert.match(css, /\.draft-watchlist,\.draft-roster-panel\{[^}]*height:228px;overflow:auto/);
+  assert.match(css, /\.draft-signals\{[^}]*height:228px;overflow:auto/);
   assert.match(css, /\.compact-lineup-slots/);
   assert.match(css, /\.roster-position-grid/);
 });
