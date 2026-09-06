@@ -329,5 +329,8 @@ test("connects to and reconciles a live Sleeper draft", async () => {
   assert.match(route, /\/league\/\$\{draft\.league_id\}\/users/);
   assert.match(preload, /loadSleeperDraft/);
   assert.match(main, /draftroom:load-sleeper-draft/);
-  assert.match(css, /sleeper-live-badge/);
+  assert.match(page, /Switch to manual/);
+  assert.match(page, /onClick=\{disconnectSleeperDraft\}/);
+  assert.match(css, /sleeper-board-sync/);
+  assert.match(css, /\.board-heading\{position:sticky/);
 });
