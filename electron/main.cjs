@@ -81,6 +81,22 @@ function registerIpc() {
       .map((entry) => ({ player_id: entry.player_id, name: [entry.player.first_name, entry.player.last_name].filter(Boolean).join(" "), position: entry.player.position, team: entry.player.team || entry.team || "FA", adp: Number(entry.stats[statField]) }));
     return { status: "Success", meta: { type: format }, players };
   });
+  ipcMain.handle("draftroom:load-sleeper-draft", async (_event, draftId, picksOnly = false) => {
+    if (!/^\d+$/.test(String(draftId))) throw new Error("Enter a valid Sleeper draft link or draft ID.");
+    const headers = { Accept: "application/json", "User-Agent": "The Program fantasy draft app" };
+    const sleeperJson = async (resource) => {
+      const response = await fetch(`https://api.sleeper.app/v1${resource}`, { headers });
+      if (!response.ok) throw new Error(`Sleeper returned ${response.status}.`);
+      return response.json();
+    };
+    if (picksOnly) {
+      const picks = await sleeperJson(`/draft/${draftId}/picks`);
+      return { draft: { draft_id: String(draftId) }, picks, users: [] };
+    }
+    const [draft, picks] = await Promise.all([sleeperJson(`/draft/${draftId}`), sleeperJson(`/draft/${draftId}/picks`)]);
+    const users = draft.league_id ? await sleeperJson(`/league/${draft.league_id}/users`) : [];
+    return { draft, picks, users };
+  });
   ipcMain.handle("draftroom:load-espn-rankings", async (_event, format) => {
     const rankTypes = { standard: "STANDARD", ppr: "PPR", superflex: "SUPERFLEX" };
     const rankType = rankTypes[format];
