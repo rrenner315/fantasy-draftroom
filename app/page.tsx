@@ -20,7 +20,7 @@ type Player = {
 type RankingFile = { id: string; name: string; players: Player[] };
 type DraftPick = Player & { pick: number; roster: number };
 type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
-type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[] };
+type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string> };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
@@ -32,6 +32,7 @@ type DesktopApi = {
   getStorageInfo: () => Promise<{ databasePath: string; backupsPath: string }>;
   loadFfcRankings: (format: string, teams: number) => Promise<FfcResponse>;
   loadSleeperRankings: (format: string) => Promise<FfcResponse>;
+  loadSleeperDraft: (draftId: string) => Promise<SleeperDraftResponse>;
   loadEspnRankings: (format: string) => Promise<FfcResponse>;
   loadYahooRankings: (format: string) => Promise<FfcResponse>;
 };
@@ -41,6 +42,9 @@ type FfcResponse = { status: string; meta?: { type?: string; teams?: number; tot
 type TierAssignment = { name: string; position: string; team: string; tier: number };
 type UnresolvedTierMatch = TierAssignment & { id: string; candidates: { id: string; name: string; position: string; team: string; score: number }[] };
 type OnlineProvider = "ffc" | "sleeper" | "espn" | "yahoo";
+type SleeperDraftPick = { player_id: string; roster_id?: string; draft_slot?: number; pick_no: number; metadata?: { first_name?: string; last_name?: string; position?: string; team?: string } };
+type SleeperDraftResponse = { draft: { draft_id: string; league_id?: string; status?: string; type?: string; settings?: { teams?: number; rounds?: number }; draft_order?: Record<string, number> }; picks: SleeperDraftPick[]; users?: { user_id: string; display_name?: string; username?: string; metadata?: { team_name?: string } }[] };
+type UnresolvedSleeperPick = { sleeperPlayerId: string; name: string; position: string; team: string; candidates: { id: string; name: string; position: string; team: string }[] };
 
 declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
@@ -101,6 +105,15 @@ export default function Home() {
   const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers">("rosters");
   const [sidePanelMode, setSidePanelMode] = useState<"none" | "signals" | "watchlist">("signals");
   const [watchlistIds, setWatchlistIds] = useState<string[]>([]);
+  const [sleeperDraftInput, setSleeperDraftInput] = useState("");
+  const [sleeperDraftId, setSleeperDraftId] = useState("");
+  const [sleeperSyncState, setSleeperSyncState] = useState<"off" | "connecting" | "live" | "error">("off");
+  const [sleeperSyncMessage, setSleeperSyncMessage] = useState("Paste a Sleeper draft link to sync picks automatically.");
+  const [sleeperUnmatchedCount, setSleeperUnmatchedCount] = useState(0);
+  const [sleeperPlayerMatches, setSleeperPlayerMatches] = useState<Record<string, string>>({});
+  const [unresolvedSleeperPicks, setUnresolvedSleeperPicks] = useState<UnresolvedSleeperPick[]>([]);
+  const [sleeperMatchSelections, setSleeperMatchSelections] = useState<Record<string, string>>({});
+  const [sleeperMatcherOpen, setSleeperMatcherOpen] = useState(false);
   const [showAllRankings, setShowAllRankings] = useState(false);
   const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
   const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
@@ -128,6 +141,8 @@ export default function Home() {
   const [tierFileName, setTierFileName] = useState("");
   const [unresolvedTierMatches, setUnresolvedTierMatches] = useState<UnresolvedTierMatch[]>([]);
   const [tierMatchSelections, setTierMatchSelections] = useState<Record<string, string>>( {} );
+  const sleeperSyncing = useRef(false);
+  const sleeperPromptedIds = useRef(new Set<string>());
 
   useEffect(() => {
     let canceled = false;
@@ -158,6 +173,9 @@ export default function Home() {
             setLeagueFormat(savedDraft.leagueFormat || "half-ppr");
             setPlatformRanks(savedDraft.platformRanks || {});
             setWatchlistIds(savedDraft.watchlistIds || []);
+            setSleeperDraftId(savedDraft.sleeperDraftId || "");
+            setSleeperDraftInput(savedDraft.sleeperDraftId || "");
+            setSleeperPlayerMatches(savedDraft.sleeperPlayerMatches || {});
           }
         } else {
           const setId = `set-${Date.now()}`;
@@ -194,9 +212,9 @@ export default function Home() {
       ...set,
       files,
       players,
-      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds }),
+      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches }),
     }));
-  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, activeSetId, activeDraftId]);
+  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, activeSetId, activeDraftId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -341,6 +359,110 @@ export default function Home() {
       return result.json() as Promise<FfcResponse>;
     });
   };
+
+  const fetchSleeperDraft = async (draftId: string) => {
+    if (window.draftroomDesktop) return window.draftroomDesktop.loadSleeperDraft(draftId);
+    const response = await fetch(`/api/sleeper/draft?draftId=${encodeURIComponent(draftId)}`);
+    if (!response.ok) throw new Error(await response.text());
+    return response.json() as Promise<SleeperDraftResponse>;
+  };
+
+  const applySleeperSnapshot = (snapshot: SleeperDraftResponse) => {
+    const draftTeams = Number(snapshot.draft.settings?.teams) || teams;
+    const sleeperTeamNames: Record<string, string> = {};
+    (snapshot.users || []).forEach((user) => {
+      const slot = snapshot.draft.draft_order?.[user.user_id];
+      if (slot) sleeperTeamNames[String(slot)] = user.metadata?.team_name || user.display_name || user.username || `Team ${slot}`;
+    });
+    const unresolved: UnresolvedSleeperPick[] = [];
+    const syncedPicks = [...snapshot.picks].sort((left, right) => left.pick_no - right.pick_no).map((sleeperPick) => {
+      const incoming = {
+        name: [sleeperPick.metadata?.first_name, sleeperPick.metadata?.last_name].filter(Boolean).join(" ") || `Sleeper player ${sleeperPick.player_id}`,
+        position: (sleeperPick.metadata?.position || "FLEX").toUpperCase(),
+        team: (sleeperPick.metadata?.team || "FA").toUpperCase(),
+      };
+      const savedMatch = players.find((player) => player.id === sleeperPlayerMatches[sleeperPick.player_id]);
+      const matched = savedMatch || findAutomaticPlayerMatch(incoming, players) as Player | null;
+      if (!matched) {
+        const candidates = rankPlayerMatches(incoming, players.filter((player) => player.position === incoming.position)).slice(0, 8).map(({ player }) => ({ id: player.id, name: player.name, position: player.position, team: player.team }));
+        unresolved.push({ sleeperPlayerId: sleeperPick.player_id, ...incoming, candidates });
+      }
+      const player = matched || { id: `sleeper-${sleeperPick.player_id}`, ...incoming, rank: players.length + sleeperPick.pick_no, source: "Sleeper live draft", sourceRank: sleeperPick.pick_no, tier: null };
+      return { ...player, pick: sleeperPick.pick_no, roster: Number(sleeperPick.draft_slot) || ownerForPick(sleeperPick.pick_no, draftTeams, snapshot.draft.type === "snake") };
+    });
+    const unmatched = syncedPicks.filter((pick) => pick.id.startsWith("sleeper-")).length;
+    setTeams(draftTeams);
+    setMySlot((current) => Math.min(current, draftTeams));
+    if (snapshot.draft.type) setSnake(snapshot.draft.type === "snake");
+    if (Object.keys(sleeperTeamNames).length) setTeamNames((current) => ({ ...current, ...sleeperTeamNames }));
+    setPicks(syncedPicks);
+    setWatchlistIds((current) => current.filter((id) => !syncedPicks.some((pick) => pick.id === id)));
+    setSleeperUnmatchedCount(unmatched);
+    setUnresolvedSleeperPicks(unresolved);
+    const hasNewMismatch = unresolved.some((pick) => !sleeperPromptedIds.current.has(pick.sleeperPlayerId));
+    if (hasNewMismatch) {
+      unresolved.forEach((pick) => sleeperPromptedIds.current.add(pick.sleeperPlayerId));
+      setSleeperMatcherOpen(true);
+    }
+    setSleeperSyncState("live");
+    setSleeperSyncMessage(`${syncedPicks.length} ${syncedPicks.length === 1 ? "pick" : "picks"} synced · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}${unmatched ? ` · ${unmatched} unmatched` : ""}`);
+  };
+
+  const syncSleeperDraft = async (draftId: string, connecting = false) => {
+    if (sleeperSyncing.current) return false;
+    sleeperSyncing.current = true;
+    if (connecting) setSleeperSyncState("connecting");
+    try {
+      applySleeperSnapshot(await fetchSleeperDraft(draftId));
+      return true;
+    } catch (error) {
+      setSleeperSyncState("error");
+      setSleeperSyncMessage(error instanceof Error ? error.message : "Sleeper could not be reached.");
+      return false;
+    } finally {
+      sleeperSyncing.current = false;
+    }
+  };
+
+  const connectSleeperDraft = async () => {
+    const matches = sleeperDraftInput.trim().match(/(?:draft\/nfl\/)?(\d{8,})/);
+    if (!matches) {
+      setSleeperSyncState("error");
+      setSleeperSyncMessage("Enter a valid Sleeper draft link or draft ID.");
+      return;
+    }
+    const draftId = matches[1];
+    setSleeperDraftInput(draftId);
+    if (await syncSleeperDraft(draftId, true)) setSleeperDraftId(draftId);
+  };
+
+  const disconnectSleeperDraft = () => {
+    setSleeperDraftId("");
+    setSleeperDraftInput("");
+    setSleeperSyncState("off");
+    setSleeperUnmatchedCount(0);
+    setSleeperSyncMessage("Paste a Sleeper draft link to sync picks automatically.");
+    setSleeperPlayerMatches({});
+    setUnresolvedSleeperPicks([]);
+    setSleeperMatchSelections({});
+    setSleeperMatcherOpen(false);
+    sleeperPromptedIds.current.clear();
+  };
+
+  const saveSleeperPlayerMatches = () => {
+    const selected = Object.fromEntries(Object.entries(sleeperMatchSelections).filter(([, playerId]) => playerId));
+    setSleeperPlayerMatches((current) => ({ ...current, ...selected }));
+    setSleeperMatchSelections({});
+    setSleeperMatcherOpen(false);
+    setSleeperSyncMessage(`${Object.keys(selected).length} player ${Object.keys(selected).length === 1 ? "match" : "matches"} saved. Refreshing from Sleeper…`);
+  };
+
+  useEffect(() => {
+    if (step !== "draft" || !sleeperDraftId) return;
+    syncSleeperDraft(sleeperDraftId);
+    const timer = window.setInterval(() => syncSleeperDraft(sleeperDraftId), 3000);
+    return () => window.clearInterval(timer);
+  }, [step, sleeperDraftId, players]);
 
   const enterDraftRoom = async () => {
     if (leagueProvider === "none") {
@@ -549,6 +671,10 @@ export default function Home() {
   });
 
   const draftPlayer = (player: Player) => {
+    if (sleeperDraftId) {
+      setSleeperSyncMessage("This draft is controlled by Sleeper. Make the selection there and it will appear here automatically.");
+      return;
+    }
     setPicks((current) => [...current, { ...player, pick: nextPick, roster: onClock }]);
     setWatchlistIds((current) => current.filter((id) => id !== player.id));
     setSearch("");
@@ -556,7 +682,13 @@ export default function Home() {
 
   const toggleWatchlist = (player: Player) => setWatchlistIds((current) => current.includes(player.id) ? current.filter((id) => id !== player.id) : [...current, player.id]);
 
-  const undo = () => setPicks((current) => current.slice(0, -1));
+  const undo = () => {
+    if (sleeperDraftId) {
+      setSleeperSyncMessage("Undo the pick in Sleeper and The Program will update automatically.");
+      return;
+    }
+    setPicks((current) => current.slice(0, -1));
+  };
 
   const openRankingSet = (set: RankingSet, mode: "rankings" | "draft", draft?: DraftSession) => {
     setActiveSetId(set.id);
@@ -573,6 +705,14 @@ export default function Home() {
       setLeagueFormat(draft.leagueFormat || "half-ppr");
       setPlatformRanks(draft.platformRanks || {});
       setWatchlistIds(draft.watchlistIds || []);
+      setSleeperDraftId(draft.sleeperDraftId || "");
+      setSleeperDraftInput(draft.sleeperDraftId || "");
+      setSleeperSyncState(draft.sleeperDraftId ? "connecting" : "off");
+      setSleeperSyncMessage(draft.sleeperDraftId ? "Waiting for the latest Sleeper picks…" : "Paste a Sleeper draft link to sync picks automatically.");
+      setSleeperPlayerMatches(draft.sleeperPlayerMatches || {});
+      setUnresolvedSleeperPicks([]);
+      setSleeperMatcherOpen(false);
+      sleeperPromptedIds.current.clear();
     } else {
       setActiveDraftId("");
       setTeams(12);
@@ -584,6 +724,13 @@ export default function Home() {
       setLeagueFormat("half-ppr");
       setPlatformRanks({});
       setWatchlistIds([]);
+      setSleeperDraftId("");
+      setSleeperDraftInput("");
+      setSleeperSyncState("off");
+      setSleeperSyncMessage("Paste a Sleeper draft link to sync picks automatically.");
+      setSleeperPlayerMatches({});
+      setUnresolvedSleeperPicks([]);
+      setSleeperMatcherOpen(false);
     }
     setStep(mode);
     setWorkspaceOpen(false);
@@ -632,7 +779,7 @@ export default function Home() {
     } else if (nameAction.kind === "create-draft") {
       const set = rankingSets.find((item) => item.id === nameAction.setId);
       if (set) {
-        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [] };
+        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [], sleeperDraftId: "", sleeperPlayerMatches: {} };
         setRankingSets((current) => current.map((item) => item.id === set.id ? { ...item, drafts: [...item.drafts, draft] } : item));
         setActiveSetId(set.id);
         setActiveDraftId(draft.id);
@@ -647,6 +794,10 @@ export default function Home() {
         setLeagueFormat("half-ppr");
         setPlatformRanks({});
         setWatchlistIds([]);
+        setSleeperDraftId("");
+        setSleeperDraftInput("");
+        setSleeperSyncState("off");
+        setSleeperPlayerMatches({});
         setStep("setup");
       }
     } else if (nameAction.kind === "rename-set") {
@@ -748,6 +899,11 @@ export default function Home() {
     <div className="tier-match-list">{unresolvedTierMatches.map((match) => <div className="tier-match-row" key={match.id}><div className="incoming-tier-name"><span>{match.position} · Tier {match.tier}</span><strong>{match.name}</strong><small>{match.team || "Team not provided"} · From tier workbook</small></div><span className="match-arrow">→</span><label><span className="sr-only">Match {match.name} to a ranked player</span><select value={tierMatchSelections[match.id] || ""} onChange={(event) => setTierMatchSelections((current) => ({ ...current, [match.id]: event.target.value }))}><option value="">Leave unmatched</option>{match.candidates.map((candidate) => <option value={candidate.id} key={candidate.id} disabled={Object.entries(tierMatchSelections).some(([matchId, playerId]) => matchId !== match.id && playerId === candidate.id)}>{candidate.name} · {candidate.team} ({Math.round(candidate.score * 100)}% match)</option>)}</select></label></div>)}</div>
     <footer><button className="dialog-cancel" onClick={() => { setUnresolvedTierMatches([]); setTierMatchSelections({}); setNotice("Unresolved tier names were left unmatched. Unlisted players remain N/A."); }}>Skip these</button><button className="expert-import-submit" onClick={finishTierMatching}>Apply matches <span>✓</span></button></footer>
   </section></div>;
+  const sleeperMatchDialog = sleeperMatcherOpen && unresolvedSleeperPicks.length > 0 && <div className="expert-import-backdrop" role="presentation"><section className="tier-match-dialog sleeper-match-dialog" role="dialog" aria-modal="true" aria-labelledby="sleeper-match-title">
+    <header><div><span className="online-badge">SLEEPER PLAYER MATCHING</span><h2 id="sleeper-match-title">Match these drafted players</h2><p>The picks are already recorded. Match any unfamiliar Sleeper names to your ranking sheet so the correct player also comes off your board.</p></div><span className="match-count">{unresolvedSleeperPicks.length}</span></header>
+    <div className="tier-match-list">{unresolvedSleeperPicks.map((match) => <div className="tier-match-row" key={match.sleeperPlayerId}><div className="incoming-tier-name"><span>{match.position} · {match.team}</span><strong>{match.name}</strong><small>Selected in Sleeper</small></div><span className="match-arrow">→</span><label><span className="sr-only">Match {match.name} to a ranked player</span><select value={sleeperMatchSelections[match.sleeperPlayerId] || ""} onChange={(event) => setSleeperMatchSelections((current) => ({ ...current, [match.sleeperPlayerId]: event.target.value }))}><option value="">Leave unmatched</option>{match.candidates.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.name} · {candidate.position} · {candidate.team}</option>)}</select></label></div>)}</div>
+    <footer><button className="dialog-cancel" onClick={() => setSleeperMatcherOpen(false)}>Review later</button><button className="expert-import-submit" onClick={saveSleeperPlayerMatches}>Save matches <span>✓</span></button></footer>
+  </section></div>;
 
   if (step === "home") return (
     <main className="app-shell home-shell">
@@ -844,6 +1000,7 @@ export default function Home() {
     <main className="app-shell setup-shell">
       {nameDialog}
       {deleteDialog}
+      {sleeperMatchDialog}
       <header className="topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
       <section className="draft-setup-card">
         <button className="back" onClick={() => setStep("rankings")}>← Back to rankings</button>
@@ -852,6 +1009,7 @@ export default function Home() {
           <label><span>Number of teams</span><select value={teams} onChange={(e) => { setTeams(Number(e.target.value)); setMySlot(Math.min(mySlot, Number(e.target.value))); }}>{[8,10,12,14,16].map(n => <option key={n}>{n}</option>)}</select><small>Common formats: 10 or 12 teams</small></label>
           <label><span>Your draft position</span><select value={mySlot} onChange={(e) => setMySlot(Number(e.target.value))}>{Array.from({length: teams}, (_, i) => i + 1).map(n => <option key={n} value={n}>Pick {n}</option>)}</select><small>Where you&apos;ll pick in round one</small></label>
         </div>
+        <section className={`sleeper-sync-setup sync-${sleeperSyncState}`}><div className="sleeper-sync-copy"><span className="online-badge">OPTIONAL LIVE DRAFT SYNC</span><h2>Connect a Sleeper draft</h2><p>Paste the draft-room link. Picks made in Sleeper will automatically update this board, rosters, signals, and watchlist.</p></div><div className="sleeper-connect-controls"><label><span>Sleeper draft link or ID</span><input value={sleeperDraftInput} disabled={Boolean(sleeperDraftId)} placeholder="https://sleeper.com/draft/nfl/…" onChange={(event) => setSleeperDraftInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") connectSleeperDraft(); }} /></label>{sleeperDraftId ? <button className="sleeper-disconnect" onClick={disconnectSleeperDraft}>Disconnect</button> : <button className="sleeper-connect" disabled={sleeperSyncState === "connecting" || !sleeperDraftInput.trim()} onClick={connectSleeperDraft}>{sleeperSyncState === "connecting" ? "Connecting…" : "Connect"}</button>}</div><div className="sleeper-sync-status"><i aria-hidden="true" /> <span>{sleeperSyncMessage}</span>{unresolvedSleeperPicks.length > 0 && <button onClick={() => setSleeperMatcherOpen(true)}>Review matches</button>}</div></section>
         <section className="platform-compare-setup"><div className="platform-compare-copy"><span className="online-badge">OPTIONAL DRAFT STRATEGY</span><h2>Compare your board to the room</h2><p>Choose a platform only if you want us to flag players it ranks at least one round earlier or later than you do.</p></div><div className="platform-settings"><label><span>League host</span><select value={leagueProvider} onChange={(event) => chooseLeagueProvider(event.target.value as LeagueProvider)}><option value="none">No comparison</option><option value="sleeper">Sleeper</option><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label>{leagueProvider !== "none" && <label><span>League type</span><select value={leagueFormat} onChange={(event) => { setLeagueFormat(event.target.value); setPlatformRanks({}); }}>{(leagueProvider === "yahoo" ? ["standard"] : leagueProvider === "espn" ? ["standard", "ppr", "superflex"] : ["standard", "half-ppr", "ppr", "2qb"]).map((format) => <option value={format} key={format}>{formatNames[format]}</option>)}</select></label>}</div><small>{leagueProvider === "none" ? "Nothing extra is required—continue with your personal rankings and tiers." : `A snapshot of ${leagueProviderName}'s defaults will be saved with this draft.`}</small></section>
         <fieldset><legend>Draft order</legend><button className={snake ? "choice selected" : "choice"} onClick={() => setSnake(true)}><span className="choice-icon">↝</span><span><strong>Snake draft</strong><small>Order reverses every round</small></span><b>✓</b></button><button className={!snake ? "choice selected" : "choice"} onClick={() => setSnake(false)}><span className="choice-icon">→</span><span><strong>Linear draft</strong><small>Same order every round</small></span><b>✓</b></button></fieldset>
         <div className="seat-preview"><span>Your seat</span><strong>{mySlot}</strong><small>of {teams}</small><i>Round 1: pick {mySlot} · Round 2: pick {snake ? teams * 2 - mySlot + 1 : teams + mySlot}</i></div>
@@ -864,7 +1022,8 @@ export default function Home() {
     <main className="app-shell draft-shell">
       {nameDialog}
       {deleteDialog}
-      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      {sleeperMatchDialog}
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{sleeperDraftId && <button className={`sleeper-live-badge sync-${sleeperSyncState}`} title={sleeperUnmatchedCount ? `${sleeperSyncMessage}. Review player matches.` : sleeperSyncMessage} onClick={() => { if (unresolvedSleeperPicks.length) setSleeperMatcherOpen(true); }}><i /> <span>{sleeperSyncState === "live" ? "Sleeper live" : sleeperSyncState === "error" ? "Sync issue" : "Connecting"}</span>{sleeperUnmatchedCount > 0 && <b>{sleeperUnmatchedCount}</b>}</button>}{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className={draftCenterView === "tiers" ? "draft-grid tier-view" : "draft-grid"}>
         <aside className={`recommend-panel side-panel-${sidePanelMode}`}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><div className="side-panel-toggle" role="group" aria-label="Player list companion panel">{(["none", "signals", "watchlist"] as const).map((mode) => <button className={sidePanelMode === mode ? "active" : ""} aria-pressed={sidePanelMode === mode} onClick={() => setSidePanelMode(mode)} key={mode}>{mode === "none" ? "None" : mode === "signals" ? "Signals" : `Watchlist${watchlist.length ? ` ${watchlist.length}` : ""}`}</button>)}</div></div>
           {sidePanelMode === "signals" && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : signal.kind === "stack" ? "⌁" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}

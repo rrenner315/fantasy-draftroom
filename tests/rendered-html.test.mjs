@@ -308,3 +308,24 @@ test("uses the entire draft workspace for the tier board", async () => {
   assert.match(css, /\.draft-grid\.tier-view\{grid-template-columns:1fr\}/);
   assert.match(css, /\.tier-view>\.recommend-panel,\.tier-view>\.activity-panel\{display:none\}/);
 });
+
+test("connects to and reconciles a live Sleeper draft", async () => {
+  const [page, css, route, preload, main] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/sleeper/draft/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../electron/preload.cjs", import.meta.url), "utf8"),
+    readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /Connect a Sleeper draft/);
+  assert.match(page, /setInterval\(\(\) => syncSleeperDraft\(sleeperDraftId\), 3000\)/);
+  assert.match(page, /setPicks\(syncedPicks\)/);
+  assert.match(page, /setWatchlistIds[\s\S]*syncedPicks/);
+  assert.match(page, /This draft is controlled by Sleeper/);
+  assert.match(route, /\/draft\/\$\{draftId\}\/picks/);
+  assert.match(route, /\/league\/\$\{draft\.league_id\}\/users/);
+  assert.match(preload, /loadSleeperDraft/);
+  assert.match(main, /draftroom:load-sleeper-draft/);
+  assert.match(css, /sleeper-live-badge/);
+});
