@@ -173,7 +173,7 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /Rankings View/);
+  assert.match(page, /Draft Board/);
   assert.match(page, /Tier Board/);
   assert.match(page, /Available by tier/);
   assert.match(page, /tierBoardColumns/);
@@ -184,6 +184,21 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
   assert.match(css, /tier-column-rb/);
   assert.match(css, /tier-column-wr/);
   assert.match(css, /tier-column-te/);
+});
+
+test("collapses individual team rosters on the draft board", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /expandedRosterTeams/);
+  assert.match(page, /Collapse all/);
+  assert.match(page, /Expand all/);
+  assert.match(page, /aria-expanded=\{expanded\}/);
+  assert.match(page, /toggleRosterTeam\(team\)/);
+  assert.match(css, /\.roster\.collapsed\{min-height:0\}/);
+  assert.match(css, /\.roster-expand/);
 });
 
 test("shows an elapsed timer that resets for every pick", async () => {
