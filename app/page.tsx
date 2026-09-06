@@ -20,7 +20,7 @@ type Player = {
 type RankingFile = { id: string; name: string; players: Player[] };
 type DraftPick = Player & { pick: number; roster: number };
 type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
-type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string> };
+type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string>; sleeperSyncPaused?: boolean };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
@@ -45,6 +45,7 @@ type OnlineProvider = "ffc" | "sleeper" | "espn" | "yahoo";
 type SleeperDraftPick = { player_id: string; roster_id?: string; draft_slot?: number; pick_no: number; metadata?: { first_name?: string; last_name?: string; position?: string; team?: string } };
 type SleeperDraftResponse = { draft: { draft_id: string; league_id?: string; status?: string; type?: string; settings?: { teams?: number; rounds?: number }; draft_order?: Record<string, number> }; picks: SleeperDraftPick[]; users?: { user_id: string; display_name?: string; username?: string; metadata?: { team_name?: string } }[] };
 type UnresolvedSleeperPick = { sleeperPlayerId: string; name: string; position: string; team: string; candidates: { id: string; name: string; position: string; team: string }[] };
+type SleeperPickOverride = { pick: number; roster: number; localPlayer: string; sleeperPlayer: string };
 
 declare global { interface Window { draftroomDesktop?: DesktopApi } }
 
@@ -114,6 +115,9 @@ export default function Home() {
   const [unresolvedSleeperPicks, setUnresolvedSleeperPicks] = useState<UnresolvedSleeperPick[]>([]);
   const [sleeperMatchSelections, setSleeperMatchSelections] = useState<Record<string, string>>({});
   const [sleeperMatcherOpen, setSleeperMatcherOpen] = useState(false);
+  const [sleeperSyncPaused, setSleeperSyncPaused] = useState(false);
+  const [sleeperPickOverrides, setSleeperPickOverrides] = useState<SleeperPickOverride[]>([]);
+  const [sleeperOverrideReportOpen, setSleeperOverrideReportOpen] = useState(false);
   const [showAllRankings, setShowAllRankings] = useState(false);
   const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
   const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
@@ -176,6 +180,7 @@ export default function Home() {
             setSleeperDraftId(savedDraft.sleeperDraftId || "");
             setSleeperDraftInput(savedDraft.sleeperDraftId || "");
             setSleeperPlayerMatches(savedDraft.sleeperPlayerMatches || {});
+            setSleeperSyncPaused(savedDraft.sleeperSyncPaused || false);
           }
         } else {
           const setId = `set-${Date.now()}`;
@@ -212,9 +217,9 @@ export default function Home() {
       ...set,
       files,
       players,
-      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches }),
+      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused }),
     }));
-  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, activeSetId, activeDraftId]);
+  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused, activeSetId, activeDraftId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -367,7 +372,7 @@ export default function Home() {
     return response.json() as Promise<SleeperDraftResponse>;
   };
 
-  const applySleeperSnapshot = (snapshot: SleeperDraftResponse) => {
+  const applySleeperSnapshot = (snapshot: SleeperDraftResponse, reportOverrides = false) => {
     const draftTeams = Number(snapshot.draft.settings?.teams) || teams;
     const sleeperTeamNames: Record<string, string> = {};
     (snapshot.users || []).forEach((user) => {
@@ -391,6 +396,11 @@ export default function Home() {
       return { ...player, pick: sleeperPick.pick_no, roster: Number(sleeperPick.draft_slot) || ownerForPick(sleeperPick.pick_no, draftTeams, snapshot.draft.type === "snake") };
     });
     const unmatched = syncedPicks.filter((pick) => pick.id.startsWith("sleeper-")).length;
+    const overrides = reportOverrides ? picks.flatMap((localPick) => {
+      const sleeperPick = syncedPicks.find((pick) => pick.pick === localPick.pick);
+      const sameSelection = sleeperPick && normalizePlayerName(sleeperPick.name) === normalizePlayerName(localPick.name) && sleeperPick.roster === localPick.roster;
+      return sameSelection ? [] : [{ pick: localPick.pick, roster: sleeperPick?.roster || localPick.roster, localPlayer: localPick.name, sleeperPlayer: sleeperPick?.name || "No pick recorded in Sleeper" }];
+    }) : [];
     setTeams(draftTeams);
     setMySlot((current) => Math.min(current, draftTeams));
     if (snapshot.draft.type) setSnake(snapshot.draft.type === "snake");
@@ -398,6 +408,10 @@ export default function Home() {
     setPicks(syncedPicks);
     setWatchlistIds((current) => current.filter((id) => !syncedPicks.some((pick) => pick.id === id)));
     setSleeperUnmatchedCount(unmatched);
+    if (reportOverrides) {
+      setSleeperPickOverrides(overrides);
+      setSleeperOverrideReportOpen(overrides.length > 0);
+    }
     setUnresolvedSleeperPicks(unresolved);
     const hasNewMismatch = unresolved.some((pick) => !sleeperPromptedIds.current.has(pick.sleeperPlayerId));
     if (hasNewMismatch) {
@@ -405,15 +419,15 @@ export default function Home() {
       setSleeperMatcherOpen(true);
     }
     setSleeperSyncState("live");
-    setSleeperSyncMessage(`${syncedPicks.length} ${syncedPicks.length === 1 ? "pick" : "picks"} synced · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}${unmatched ? ` · ${unmatched} unmatched` : ""}`);
+    setSleeperSyncMessage(reportOverrides ? `Reconnected · ${overrides.length} manual ${overrides.length === 1 ? "pick" : "picks"} replaced by Sleeper` : `${syncedPicks.length} ${syncedPicks.length === 1 ? "pick" : "picks"} synced · ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}${unmatched ? ` · ${unmatched} unmatched` : ""}`);
   };
 
-  const syncSleeperDraft = async (draftId: string, connecting = false) => {
+  const syncSleeperDraft = async (draftId: string, connecting = false, reportOverrides = false) => {
     if (sleeperSyncing.current) return false;
     sleeperSyncing.current = true;
     if (connecting) setSleeperSyncState("connecting");
     try {
-      applySleeperSnapshot(await fetchSleeperDraft(draftId, !connecting));
+      applySleeperSnapshot(await fetchSleeperDraft(draftId, !connecting), reportOverrides);
       return true;
     } catch (error) {
       setSleeperSyncState("error");
@@ -433,7 +447,21 @@ export default function Home() {
     }
     const draftId = matches[1];
     setSleeperDraftInput(draftId);
-    if (await syncSleeperDraft(draftId, true)) setSleeperDraftId(draftId);
+    if (await syncSleeperDraft(draftId, true)) {
+      setSleeperDraftId(draftId);
+      setSleeperSyncPaused(false);
+    }
+  };
+
+  const pauseSleeperSync = () => {
+    setSleeperSyncPaused(true);
+    setSleeperSyncState("off");
+    setSleeperSyncMessage("Manual mode · Sleeper connection paused");
+  };
+
+  const reconnectSleeperDraft = async () => {
+    if (!sleeperDraftId) return;
+    if (await syncSleeperDraft(sleeperDraftId, true, true)) setSleeperSyncPaused(false);
   };
 
   const disconnectSleeperDraft = () => {
@@ -446,6 +474,9 @@ export default function Home() {
     setUnresolvedSleeperPicks([]);
     setSleeperMatchSelections({});
     setSleeperMatcherOpen(false);
+    setSleeperSyncPaused(false);
+    setSleeperPickOverrides([]);
+    setSleeperOverrideReportOpen(false);
     sleeperPromptedIds.current.clear();
   };
 
@@ -458,11 +489,11 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (step !== "draft" || !sleeperDraftId) return;
+    if (step !== "draft" || !sleeperDraftId || sleeperSyncPaused) return;
     syncSleeperDraft(sleeperDraftId);
     const timer = window.setInterval(() => syncSleeperDraft(sleeperDraftId), 1000);
     return () => window.clearInterval(timer);
-  }, [step, sleeperDraftId, players]);
+  }, [step, sleeperDraftId, sleeperSyncPaused, players]);
 
   const enterDraftRoom = async () => {
     if (leagueProvider === "none") {
@@ -671,7 +702,7 @@ export default function Home() {
   });
 
   const draftPlayer = (player: Player) => {
-    if (sleeperDraftId) {
+    if (sleeperDraftId && !sleeperSyncPaused) {
       setSleeperSyncMessage("This draft is controlled by Sleeper. Make the selection there and it will appear here automatically.");
       return;
     }
@@ -683,7 +714,7 @@ export default function Home() {
   const toggleWatchlist = (player: Player) => setWatchlistIds((current) => current.includes(player.id) ? current.filter((id) => id !== player.id) : [...current, player.id]);
 
   const undo = () => {
-    if (sleeperDraftId) {
+    if (sleeperDraftId && !sleeperSyncPaused) {
       setSleeperSyncMessage("Undo the pick in Sleeper and The Program will update automatically.");
       return;
     }
@@ -710,6 +741,7 @@ export default function Home() {
       setSleeperSyncState(draft.sleeperDraftId ? "connecting" : "off");
       setSleeperSyncMessage(draft.sleeperDraftId ? "Waiting for the latest Sleeper picks…" : "Paste a Sleeper draft link to sync picks automatically.");
       setSleeperPlayerMatches(draft.sleeperPlayerMatches || {});
+      setSleeperSyncPaused(draft.sleeperSyncPaused || false);
       setUnresolvedSleeperPicks([]);
       setSleeperMatcherOpen(false);
       sleeperPromptedIds.current.clear();
@@ -729,6 +761,7 @@ export default function Home() {
       setSleeperSyncState("off");
       setSleeperSyncMessage("Paste a Sleeper draft link to sync picks automatically.");
       setSleeperPlayerMatches({});
+      setSleeperSyncPaused(false);
       setUnresolvedSleeperPicks([]);
       setSleeperMatcherOpen(false);
     }
@@ -779,7 +812,7 @@ export default function Home() {
     } else if (nameAction.kind === "create-draft") {
       const set = rankingSets.find((item) => item.id === nameAction.setId);
       if (set) {
-        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [], sleeperDraftId: "", sleeperPlayerMatches: {} };
+        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [], sleeperDraftId: "", sleeperPlayerMatches: {}, sleeperSyncPaused: false };
         setRankingSets((current) => current.map((item) => item.id === set.id ? { ...item, drafts: [...item.drafts, draft] } : item));
         setActiveSetId(set.id);
         setActiveDraftId(draft.id);
@@ -798,6 +831,7 @@ export default function Home() {
         setSleeperDraftInput("");
         setSleeperSyncState("off");
         setSleeperPlayerMatches({});
+        setSleeperSyncPaused(false);
         setStep("setup");
       }
     } else if (nameAction.kind === "rename-set") {
@@ -904,6 +938,11 @@ export default function Home() {
     <div className="tier-match-list">{unresolvedSleeperPicks.map((match) => <div className="tier-match-row" key={match.sleeperPlayerId}><div className="incoming-tier-name"><span>{match.position} · {match.team}</span><strong>{match.name}</strong><small>Selected in Sleeper</small></div><span className="match-arrow">→</span><label><span className="sr-only">Match {match.name} to a ranked player</span><select value={sleeperMatchSelections[match.sleeperPlayerId] || ""} onChange={(event) => setSleeperMatchSelections((current) => ({ ...current, [match.sleeperPlayerId]: event.target.value }))}><option value="">Leave unmatched</option>{match.candidates.map((candidate) => <option value={candidate.id} key={candidate.id}>{candidate.name} · {candidate.position} · {candidate.team}</option>)}</select></label></div>)}</div>
     <footer><button className="dialog-cancel" onClick={() => setSleeperMatcherOpen(false)}>Review later</button><button className="expert-import-submit" onClick={saveSleeperPlayerMatches}>Save matches <span>✓</span></button></footer>
   </section></div>;
+  const sleeperOverrideReport = sleeperOverrideReportOpen && <div className="expert-import-backdrop" role="presentation"><section className="sleeper-override-dialog" role="dialog" aria-modal="true" aria-labelledby="sleeper-override-title">
+    <header><div><span className="online-badge">SLEEPER RECONNECTED</span><h2 id="sleeper-override-title">Sleeper replaced {sleeperPickOverrides.length} manual {sleeperPickOverrides.length === 1 ? "pick" : "picks"}</h2><p>Sleeper is the source of truth again. These local selections differed from the live draft and were replaced.</p></div><button className="expert-dialog-close" aria-label="Close reconciliation report" onClick={() => setSleeperOverrideReportOpen(false)}>×</button></header>
+    <div className="override-list"><div className="override-list-head"><span>Pick & team</span><span>The Program</span><span>Sleeper</span></div>{sleeperPickOverrides.map((override) => <div className="override-row" key={override.pick}><div><b>Pick {override.pick}</b><small>{teamDisplayName(override.roster)}</small></div><span>{override.localPlayer}</span><strong><i>→</i>{override.sleeperPlayer}</strong></div>)}</div>
+    <footer><button className="expert-import-submit" onClick={() => setSleeperOverrideReportOpen(false)}>Done <span>✓</span></button></footer>
+  </section></div>;
 
   if (step === "home") return (
     <main className="app-shell home-shell">
@@ -1001,6 +1040,7 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       {sleeperMatchDialog}
+      {sleeperOverrideReport}
       <header className="topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className="stepper"><span>✓ Rankings</span><i /><span className="active">2 Draft setup</span><i /><span>3 Draft room</span></div>{workspaceSwitcher()}</header>
       <section className="draft-setup-card">
         <button className="back" onClick={() => setStep("rankings")}>← Back to rankings</button>
@@ -1023,7 +1063,8 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       {sleeperMatchDialog}
-      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      {sleeperOverrideReport}
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId && !sleeperSyncPaused)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className={draftCenterView === "tiers" ? "draft-grid tier-view" : "draft-grid"}>
         <aside className={`recommend-panel side-panel-${sidePanelMode}`}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><div className="side-panel-toggle" role="group" aria-label="Player list companion panel">{(["none", "signals", "watchlist"] as const).map((mode) => <button className={sidePanelMode === mode ? "active" : ""} aria-pressed={sidePanelMode === mode} onClick={() => setSidePanelMode(mode)} key={mode}>{mode === "none" ? "None" : mode === "signals" ? "Signals" : `Watchlist${watchlist.length ? ` ${watchlist.length}` : ""}`}</button>)}</div></div>
           {sidePanelMode === "signals" && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : signal.kind === "stack" ? "⌁" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}
@@ -1031,7 +1072,7 @@ export default function Home() {
           <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE","FLEX"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
           <div className="player-list">{filtered.slice(0, 60).map((player) => <div className="player-list-row" key={player.id}><button className="player-draft-action" onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>＋</i></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>
         </aside>
-        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions">{sleeperDraftId && <div className={`sleeper-board-sync sync-${sleeperSyncState}`}><button className="sleeper-sync-summary" title={sleeperSyncMessage} onClick={() => { if (unresolvedSleeperPicks.length) setSleeperMatcherOpen(true); }}><i /> <span>{sleeperSyncState === "live" ? "Sleeper live" : sleeperSyncState === "error" ? "Sync issue" : "Connecting"}</span>{sleeperUnmatchedCount > 0 && <b>{sleeperUnmatchedCount}</b>}</button><button className="manual-switch" onClick={disconnectSleeperDraft}>Switch to manual</button></div>}<div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Rankings View</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
+        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions">{sleeperDraftId && <div className={`sleeper-board-sync ${sleeperSyncPaused ? "sync-paused" : `sync-${sleeperSyncState}`}`}><button className="sleeper-sync-summary" title={sleeperSyncMessage} onClick={() => { if (unresolvedSleeperPicks.length) setSleeperMatcherOpen(true); }}><i /> <span>{sleeperSyncPaused ? "Manual mode" : sleeperSyncState === "live" ? "Sleeper live" : sleeperSyncState === "error" ? "Sync issue" : "Connecting"}</span>{sleeperUnmatchedCount > 0 && <b>{sleeperUnmatchedCount}</b>}</button>{sleeperSyncPaused ? <button className="manual-switch reconnect" disabled={sleeperSyncState === "connecting"} onClick={reconnectSleeperDraft}>{sleeperSyncState === "connecting" ? "Reconnecting…" : "Reconnect Sleeper"}</button> : <button className="manual-switch" onClick={pauseSleeperSync}>Switch to manual</button>}</div>}<div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Rankings View</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
           {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <div className="tier-player-row" key={player.id}><button className="tier-draft-action" onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>)}</div></section>)}</div>}
         </section>
         <aside className="activity-panel"><div className="panel-title"><div><span className="eyebrow">PICK LOG</span><h2>Latest picks</h2></div><button onClick={undo} disabled={!picks.length}>Undo</button></div><div className="pick-log">{[...picks].reverse().map(p => <div key={p.pick}><b>{p.pick}</b><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{teamDisplayName(p.roster)} · {p.team}</small></div></div>)}{!picks.length && <div className="empty-log"><span>⌁</span><strong>The board is clean</strong><small>Select a player to record pick 1.</small></div>}</div></aside>

@@ -330,7 +330,14 @@ test("connects to and reconciles a live Sleeper draft", async () => {
   assert.match(preload, /loadSleeperDraft/);
   assert.match(main, /draftroom:load-sleeper-draft/);
   assert.match(page, /Switch to manual/);
+  assert.match(page, /Reconnect Sleeper/);
+  assert.match(page, /sleeperSyncPaused/);
+  assert.match(page, /reportOverrides/);
+  assert.match(page, /No pick recorded in Sleeper/);
+  assert.match(page, /The Program/);
+  assert.match(page, /Sleeper replaced/);
   assert.match(page, /onClick=\{disconnectSleeperDraft\}/);
   assert.match(css, /sleeper-board-sync/);
+  assert.match(css, /sleeper-override-dialog/);
   assert.match(css, /\.board-heading\{position:sticky/);
 });
