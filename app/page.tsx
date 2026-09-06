@@ -20,7 +20,8 @@ type Player = {
 type RankingFile = { id: string; name: string; players: Player[] };
 type DraftPick = Player & { pick: number; roster: number };
 type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
-type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string>; sleeperSyncPaused?: boolean };
+type RosterPosition = "QB" | "RB" | "WR" | "TE" | "FLEX" | "SUPER_FLEX" | "K" | "DST" | "BN";
+type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; rosterPositions?: RosterPosition[]; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string>; sleeperSyncPaused?: boolean };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
@@ -43,7 +44,7 @@ type TierAssignment = { name: string; position: string; team: string; tier: numb
 type UnresolvedTierMatch = TierAssignment & { id: string; candidates: { id: string; name: string; position: string; team: string; score: number }[] };
 type OnlineProvider = "ffc" | "sleeper" | "espn" | "yahoo";
 type SleeperDraftPick = { player_id: string; roster_id?: string; draft_slot?: number; pick_no: number; metadata?: { first_name?: string; last_name?: string; position?: string; team?: string } };
-type SleeperDraftResponse = { draft: { draft_id: string; league_id?: string; status?: string; type?: string; settings?: { teams?: number; rounds?: number }; draft_order?: Record<string, number> }; picks: SleeperDraftPick[]; users?: { user_id: string; display_name?: string; username?: string; metadata?: { team_name?: string } }[] };
+type SleeperDraftResponse = { draft: { draft_id: string; league_id?: string; status?: string; type?: string; settings?: { teams?: number; rounds?: number }; draft_order?: Record<string, number> }; picks: SleeperDraftPick[]; users?: { user_id: string; display_name?: string; username?: string; metadata?: { team_name?: string } }[]; league?: { roster_positions?: string[] } | null };
 type UnresolvedSleeperPick = { sleeperPlayerId: string; name: string; position: string; team: string; candidates: { id: string; name: string; position: string; team: string }[] };
 type SleeperPickOverride = { pick: number; roster: number; localPlayer: string; sleeperPlayer: string };
 
@@ -67,6 +68,14 @@ const expertSources: { id: OnlineProvider; name: string; description: string }[]
 ];
 
 const formatNames: Record<string, string> = { standard: "Standard", "half-ppr": "Half-PPR", ppr: "PPR", "2qb": "2QB", superflex: "Superflex" };
+const defaultRosterPositions: RosterPosition[] = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DST", "BN", "BN", "BN", "BN", "BN", "BN"];
+const rosterPositionLabels: Record<RosterPosition, string> = { QB: "Quarterback", RB: "Running back", WR: "Wide receiver", TE: "Tight end", FLEX: "Flex", SUPER_FLEX: "Superflex", K: "Kicker", DST: "D/ST", BN: "Bench" };
+const supportedRosterPositions = new Set<RosterPosition>(["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K", "DST", "BN"]);
+
+function normalizeRosterPositions(positions?: string[]) {
+  const normalized = (positions || []).map((position) => position === "DEF" ? "DST" : position === "SUPERFLEX" ? "SUPER_FLEX" : position).filter((position): position is RosterPosition => supportedRosterPositions.has(position as RosterPosition));
+  return normalized.length ? normalized : defaultRosterPositions;
+}
 
 function rankingRecordsToPlayers(records: { name: string; position: string; team: string; sourceRank: number }[], sourceName: string): Player[] {
   return records.map((record, index) => ({
@@ -100,10 +109,11 @@ export default function Home() {
   const [snake, setSnake] = useState(true);
   const [picks, setPicks] = useState<DraftPick[]>([]);
   const [teamNames, setTeamNames] = useState<Record<string, string>>({});
+  const [rosterPositions, setRosterPositions] = useState<RosterPosition[]>(defaultRosterPositions);
   const [pickTimerSeconds, setPickTimerSeconds] = useState(0);
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
-  const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers">("rosters");
+  const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers" | "my-roster">("rosters");
   const [sidePanelMode, setSidePanelMode] = useState<"none" | "signals" | "watchlist">("signals");
   const [watchlistIds, setWatchlistIds] = useState<string[]>([]);
   const [sleeperDraftInput, setSleeperDraftInput] = useState("");
@@ -173,6 +183,7 @@ export default function Home() {
             setSnake(savedDraft.snake);
             setPicks(savedDraft.picks || []);
             setTeamNames(savedDraft.teamNames || {});
+            setRosterPositions(savedDraft.rosterPositions || defaultRosterPositions);
             setLeagueProvider(savedDraft.leagueProvider || "none");
             setLeagueFormat(savedDraft.leagueFormat || "half-ppr");
             setPlatformRanks(savedDraft.platformRanks || {});
@@ -217,9 +228,9 @@ export default function Home() {
       ...set,
       files,
       players,
-      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused }),
+      drafts: set.drafts.map((draft) => draft.id !== activeDraftId ? draft : { ...draft, teams, mySlot, snake, picks, teamNames, rosterPositions, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused }),
     }));
-  }, [files, players, teams, mySlot, snake, picks, teamNames, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused, activeSetId, activeDraftId]);
+  }, [files, players, teams, mySlot, snake, picks, teamNames, rosterPositions, leagueProvider, leagueFormat, platformRanks, watchlistIds, sleeperDraftId, sleeperPlayerMatches, sleeperSyncPaused, activeSetId, activeDraftId]);
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -403,6 +414,7 @@ export default function Home() {
     }) : [];
     setTeams(draftTeams);
     setMySlot((current) => Math.min(current, draftTeams));
+    if (snapshot.league?.roster_positions?.length) setRosterPositions(normalizeRosterPositions(snapshot.league.roster_positions));
     if (snapshot.draft.type) setSnake(snapshot.draft.type === "snake");
     if (Object.keys(sleeperTeamNames).length) setTeamNames((current) => ({ ...current, ...sleeperTeamNames }));
     setPicks(syncedPicks);
@@ -683,6 +695,32 @@ export default function Home() {
   }).sort((left, right) => left.remaining.length - right.remaining.length).slice(0, 2);
   tierCliffs.forEach((cliff) => draftSignals.push({ kind: "cliff", title: `${cliff.remaining.length === 1 ? "Last" : cliff.remaining.length} Tier ${cliff.tier} ${cliff.position}${cliff.remaining.length === 1 ? "" : "s"}`, detail: cliff.remaining.map((player) => player.name).join(" · ") }));
   const myRosterPicks = picks.filter((pick) => pick.roster === mySlot);
+  const rosterPositionCount = (position: RosterPosition) => rosterPositions.filter((slot) => slot === position).length;
+  const setRosterPositionCount = (position: RosterPosition, count: number) => {
+    const next = rosterPositions.filter((slot) => slot !== position);
+    const order: RosterPosition[] = ["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K", "DST", "BN"];
+    setRosterPositions(order.flatMap((slot) => slot === position ? Array.from({ length: count }, () => slot) : next.filter((item) => item === slot)));
+  };
+  const applyRosterPreset = (preset: "standard" | "superflex" | "2qb") => setRosterPositions(preset === "standard"
+    ? defaultRosterPositions
+    : preset === "superflex"
+      ? ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "SUPER_FLEX", "K", "DST", "BN", "BN", "BN", "BN", "BN", "BN"]
+      : ["QB", "QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "K", "DST", "BN", "BN", "BN", "BN", "BN", "BN"]);
+  const rosterSlots = (() => {
+    const slots = rosterPositions.map((slot, index) => ({ id: `${slot}-${index}`, position: slot, player: undefined as DraftPick | undefined }));
+    const starters = slots.filter((slot) => slot.position !== "BN");
+    const bench = slots.filter((slot) => slot.position === "BN");
+    const fits = (slot: RosterPosition, playerPosition: string) => slot === playerPosition || (slot === "FLEX" && ["RB", "WR", "TE"].includes(playerPosition)) || (slot === "SUPER_FLEX" && ["QB", "RB", "WR", "TE"].includes(playerPosition));
+    const overflow: DraftPick[] = [];
+    myRosterPicks.forEach((player) => {
+      const exact = starters.find((slot) => !slot.player && slot.position === player.position);
+      const flexible = starters.find((slot) => !slot.player && fits(slot.position, player.position));
+      const destination = exact || flexible || bench.find((slot) => !slot.player);
+      if (destination) destination.player = player;
+      else overflow.push(player);
+    });
+    return [...starters, ...bench, ...overflow.map((player, index) => ({ id: `overflow-${index}`, position: "BN" as RosterPosition, player }))];
+  })();
   const upcomingPlayers = [...available].sort((left, right) => left.rank - right.rank).slice(0, Math.max(teams * 2, 20));
   const stackOpportunity = upcomingPlayers.map((candidate) => {
     const partner = myRosterPicks.find((owned) => owned.team && owned.team === candidate.team && ((owned.position === "QB" && ["WR", "TE"].includes(candidate.position)) || (candidate.position === "QB" && ["WR", "TE"].includes(owned.position))));
@@ -732,6 +770,7 @@ export default function Home() {
       setSnake(draft.snake);
       setPicks(draft.picks);
       setTeamNames(draft.teamNames || {});
+      setRosterPositions(draft.rosterPositions || defaultRosterPositions);
       setLeagueProvider(draft.leagueProvider || "none");
       setLeagueFormat(draft.leagueFormat || "half-ppr");
       setPlatformRanks(draft.platformRanks || {});
@@ -752,6 +791,7 @@ export default function Home() {
       setSnake(true);
       setPicks([]);
       setTeamNames({});
+      setRosterPositions(defaultRosterPositions);
       setLeagueProvider("none");
       setLeagueFormat("half-ppr");
       setPlatformRanks({});
@@ -812,7 +852,7 @@ export default function Home() {
     } else if (nameAction.kind === "create-draft") {
       const set = rankingSets.find((item) => item.id === nameAction.setId);
       if (set) {
-        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [], sleeperDraftId: "", sleeperPlayerMatches: {}, sleeperSyncPaused: false };
+        const draft: DraftSession = { id: `draft-${Date.now()}`, name, teams: 12, mySlot: 4, snake: true, picks: [], teamNames: {}, rosterPositions: defaultRosterPositions, leagueProvider: "none", leagueFormat: "half-ppr", platformRanks: {}, watchlistIds: [], sleeperDraftId: "", sleeperPlayerMatches: {}, sleeperSyncPaused: false };
         setRankingSets((current) => current.map((item) => item.id === set.id ? { ...item, drafts: [...item.drafts, draft] } : item));
         setActiveSetId(set.id);
         setActiveDraftId(draft.id);
@@ -823,6 +863,7 @@ export default function Home() {
         setSnake(draft.snake);
         setPicks([]);
         setTeamNames({});
+        setRosterPositions(defaultRosterPositions);
         setLeagueProvider("none");
         setLeagueFormat("half-ppr");
         setPlatformRanks({});
@@ -1050,6 +1091,7 @@ export default function Home() {
           <label><span>Your draft position</span><select value={mySlot} onChange={(e) => setMySlot(Number(e.target.value))}>{Array.from({length: teams}, (_, i) => i + 1).map(n => <option key={n} value={n}>Pick {n}</option>)}</select><small>Where you&apos;ll pick in round one</small></label>
         </div>
         <section className={`sleeper-sync-setup sync-${sleeperSyncState}`}><div className="sleeper-sync-copy"><span className="online-badge">OPTIONAL LIVE DRAFT SYNC</span><h2>Connect a Sleeper draft</h2><p>Paste the draft-room link. Picks made in Sleeper will automatically update this board, rosters, signals, and watchlist.</p></div><div className="sleeper-connect-controls"><label><span>Sleeper draft link or ID</span><input value={sleeperDraftInput} disabled={Boolean(sleeperDraftId)} placeholder="https://sleeper.com/draft/nfl/…" onChange={(event) => setSleeperDraftInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") connectSleeperDraft(); }} /></label>{sleeperDraftId ? <button className="sleeper-disconnect" onClick={disconnectSleeperDraft}>Disconnect</button> : <button className="sleeper-connect" disabled={sleeperSyncState === "connecting" || !sleeperDraftInput.trim()} onClick={connectSleeperDraft}>{sleeperSyncState === "connecting" ? "Connecting…" : "Connect"}</button>}</div><div className="sleeper-sync-status"><i aria-hidden="true" /> <span>{sleeperSyncMessage}</span>{unresolvedSleeperPicks.length > 0 && <button onClick={() => setSleeperMatcherOpen(true)}>Review matches</button>}</div></section>
+        <section className="roster-setup"><div className="roster-setup-heading"><div><span className="online-badge">ROSTER FORMAT</span><h2>Set your lineup</h2><p>{sleeperDraftId ? "Loaded from your Sleeper league. You can still adjust any slot below." : "Choose a common format or customize every starting and bench position."}</p></div><div className="roster-presets"><button onClick={() => applyRosterPreset("standard")}>Standard</button><button onClick={() => applyRosterPreset("superflex")}>Superflex</button><button onClick={() => applyRosterPreset("2qb")}>2QB</button></div></div><div className="roster-position-grid">{(["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "K", "DST", "BN"] as RosterPosition[]).map((slot) => <label key={slot}><span>{rosterPositionLabels[slot]}</span><select aria-label={`${rosterPositionLabels[slot]} roster spots`} value={rosterPositionCount(slot)} onChange={(event) => setRosterPositionCount(slot, Number(event.target.value))}>{Array.from({ length: slot === "BN" ? 16 : 6 }, (_, index) => <option value={index} key={index}>{index}</option>)}</select></label>)}</div></section>
         <section className="platform-compare-setup"><div className="platform-compare-copy"><span className="online-badge">OPTIONAL DRAFT STRATEGY</span><h2>Compare your board to the room</h2><p>Choose a platform only if you want us to flag players it ranks at least one round earlier or later than you do.</p></div><div className="platform-settings"><label><span>League host</span><select value={leagueProvider} onChange={(event) => chooseLeagueProvider(event.target.value as LeagueProvider)}><option value="none">No comparison</option><option value="sleeper">Sleeper</option><option value="espn">ESPN</option><option value="yahoo">Yahoo</option></select></label>{leagueProvider !== "none" && <label><span>League type</span><select value={leagueFormat} onChange={(event) => { setLeagueFormat(event.target.value); setPlatformRanks({}); }}>{(leagueProvider === "yahoo" ? ["standard"] : leagueProvider === "espn" ? ["standard", "ppr", "superflex"] : ["standard", "half-ppr", "ppr", "2qb"]).map((format) => <option value={format} key={format}>{formatNames[format]}</option>)}</select></label>}</div><small>{leagueProvider === "none" ? "Nothing extra is required—continue with your personal rankings and tiers." : `A snapshot of ${leagueProviderName}'s defaults will be saved with this draft.`}</small></section>
         <fieldset><legend>Draft order</legend><button className={snake ? "choice selected" : "choice"} onClick={() => setSnake(true)}><span className="choice-icon">↝</span><span><strong>Snake draft</strong><small>Order reverses every round</small></span><b>✓</b></button><button className={!snake ? "choice selected" : "choice"} onClick={() => setSnake(false)}><span className="choice-icon">→</span><span><strong>Linear draft</strong><small>Same order every round</small></span><b>✓</b></button></fieldset>
         <div className="seat-preview"><span>Your seat</span><strong>{mySlot}</strong><small>of {teams}</small><i>Round 1: pick {mySlot} · Round 2: pick {snake ? teams * 2 - mySlot + 1 : teams + mySlot}</i></div>
@@ -1065,15 +1107,15 @@ export default function Home() {
       {sleeperMatchDialog}
       {sleeperOverrideReport}
       <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId && !sleeperSyncPaused)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
-      <section className={draftCenterView === "tiers" ? "draft-grid tier-view" : "draft-grid"}>
+      <section className={draftCenterView !== "rosters" ? "draft-grid tier-view" : "draft-grid"}>
         <aside className={`recommend-panel side-panel-${sidePanelMode}`}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><div className="side-panel-toggle" role="group" aria-label="Player list companion panel">{(["none", "signals", "watchlist"] as const).map((mode) => <button className={sidePanelMode === mode ? "active" : ""} aria-pressed={sidePanelMode === mode} onClick={() => setSidePanelMode(mode)} key={mode}>{mode === "none" ? "None" : mode === "signals" ? "Signals" : `Watchlist${watchlist.length ? ` ${watchlist.length}` : ""}`}</button>)}</div></div>
           {sidePanelMode === "signals" && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : signal.kind === "stack" ? "⌁" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}
           {sidePanelMode === "watchlist" && <section className="draft-watchlist" aria-label="Player watchlist"><div className="draft-signals-heading"><strong>Watchlist</strong><small>{watchlist.length} available</small></div>{watchlist.length ? <div className="watchlist-players">{watchlist.map((player) => <div className="watchlist-player" key={player.id}><button className="watchlist-draft" onClick={() => draftPlayer(player)}><b>{player.rank}</b><span><strong>{player.name}</strong><small>{player.position} · {player.team} · Tier {tierLabel(player)}</small></span><i>＋</i></button><button className="watch-toggle active" title="Remove from watchlist" aria-label={`Remove ${player.name} from watchlist`} onClick={() => toggleWatchlist(player)}>★</button></div>)}</div> : <div className="watchlist-empty"><span>☆</span><strong>No players watched yet</strong><small>Use the star beside a player to add them.</small></div>}</section>}
           <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE","FLEX"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
           <div className="player-list">{filtered.slice(0, 60).map((player) => <div className="player-list-row" key={player.id}><button className="player-draft-action" onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>＋</i></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>
         </aside>
-        <section className={draftCenterView === "tiers" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : "Available by tier"}</h2></div><div className="board-heading-actions">{sleeperDraftId && <div className={`sleeper-board-sync ${sleeperSyncPaused ? "sync-paused" : `sync-${sleeperSyncState}`}`}><button className="sleeper-sync-summary" title={sleeperSyncMessage} onClick={() => { if (unresolvedSleeperPicks.length) setSleeperMatcherOpen(true); }}><i /> <span>{sleeperSyncPaused ? "Manual mode" : sleeperSyncState === "live" ? "Sleeper live" : sleeperSyncState === "error" ? "Sync issue" : "Connecting"}</span>{sleeperUnmatchedCount > 0 && <b>{sleeperUnmatchedCount}</b>}</button>{sleeperSyncPaused ? <button className="manual-switch reconnect" disabled={sleeperSyncState === "connecting"} onClick={reconnectSleeperDraft}>{sleeperSyncState === "connecting" ? "Reconnecting…" : "Reconnect Sleeper"}</button> : <button className="manual-switch" onClick={pauseSleeperSync}>Switch to manual</button>}</div>}<div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Rankings View</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button></div><span>Round {round} of 16</span></div></div>
-          {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <div className="tier-player-row" key={player.id}><button className="tier-draft-action" onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>)}</div></section>)}</div>}
+        <section className={draftCenterView !== "rosters" ? "board-panel tier-board-panel" : "board-panel"}><div className="board-heading"><div><span className="eyebrow">LIVE DRAFT</span><h2>{draftCenterView === "rosters" ? "League rosters" : draftCenterView === "tiers" ? "Available by tier" : "Your roster"}</h2></div><div className="board-heading-actions">{sleeperDraftId && <div className={`sleeper-board-sync ${sleeperSyncPaused ? "sync-paused" : `sync-${sleeperSyncState}`}`}><button className="sleeper-sync-summary" title={sleeperSyncMessage} onClick={() => { if (unresolvedSleeperPicks.length) setSleeperMatcherOpen(true); }}><i /> <span>{sleeperSyncPaused ? "Manual mode" : sleeperSyncState === "live" ? "Sleeper live" : sleeperSyncState === "error" ? "Sync issue" : "Connecting"}</span>{sleeperUnmatchedCount > 0 && <b>{sleeperUnmatchedCount}</b>}</button>{sleeperSyncPaused ? <button className="manual-switch reconnect" disabled={sleeperSyncState === "connecting"} onClick={reconnectSleeperDraft}>{sleeperSyncState === "connecting" ? "Reconnecting…" : "Reconnect Sleeper"}</button> : <button className="manual-switch" onClick={pauseSleeperSync}>Switch to manual</button>}</div>}<div className="board-view-toggle" role="group" aria-label="Draft board view"><button className={draftCenterView === "rosters" ? "active" : ""} aria-pressed={draftCenterView === "rosters"} onClick={() => setDraftCenterView("rosters")}><span>▦</span> Rankings View</button><button className={draftCenterView === "tiers" ? "active" : ""} aria-pressed={draftCenterView === "tiers"} onClick={() => setDraftCenterView("tiers")}><span>≡</span> Tier Board</button><button className={draftCenterView === "my-roster" ? "active" : ""} aria-pressed={draftCenterView === "my-roster"} onClick={() => setDraftCenterView("my-roster")}><span>♙</span> Roster View</button></div><span>Round {round} of {rosterPositions.length}</span></div></div>
+          {draftCenterView === "rosters" ? <div className="roster-board">{Array.from({length: teams}, (_, i) => i + 1).map(team => <div className={team === mySlot ? "roster my-roster" : "roster"} key={team}><div className="roster-head"><div className="roster-team-name"><span>{teamDisplayName(team)}</span>{team !== mySlot && <button aria-label={`Rename ${teamDisplayName(team)}`} title="Rename team" onClick={() => renameTeam(team)}>✎</button>}</div>{team === onClock && <i>ON CLOCK</i>}</div>{picks.filter(p => p.roster === team).map(p => <div className="roster-player" key={p.pick}><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{p.team} · Pick {p.pick}</small></div></div>)}{picks.filter(p => p.roster === team).length === 0 && <div className="empty-roster">No picks yet</div>}</div>)}</div> : draftCenterView === "tiers" ? <div className="draft-tier-board">{tierBoardColumns.map((column) => <section className={`draft-tier-column tier-column-${column.position.toLowerCase()}`} key={column.position}><header><strong>{column.position === "QB" ? "QUARTERBACK" : column.position === "RB" ? "RUNNING BACK" : column.position === "WR" ? "WIDE RECEIVER" : "TIGHT END"}</strong><span>{column.groups.reduce((total, group) => total + group.players.length, 0)} left</span></header><div>{column.groups.map((group) => <div className={group.tier === null ? "draft-tier-group na-tier" : "draft-tier-group"} key={group.tier ?? "na"}><div className="draft-tier-label"><span>{group.tier === null ? "N/A" : `TIER ${group.tier}`}</span><i>{group.players.length}</i></div>{group.players.map((player) => <div className="tier-player-row" key={player.id}><button className="tier-draft-action" onClick={() => draftPlayer(player)}><div><strong>{player.name}</strong><small>{player.team} · Rank {player.rank}</small>{strategyBadge(player)}</div><span>＋</span></button><button className={watchlistIds.includes(player.id) ? "watch-toggle active" : "watch-toggle"} title={watchlistIds.includes(player.id) ? "Remove from watchlist" : "Add to watchlist"} aria-label={`${watchlistIds.includes(player.id) ? "Remove" : "Add"} ${player.name} ${watchlistIds.includes(player.id) ? "from" : "to"} watchlist`} onClick={() => toggleWatchlist(player)}>{watchlistIds.includes(player.id) ? "★" : "☆"}</button></div>)}</div>)}</div></section>)}</div> : <div className="my-lineup"><div className="lineup-summary"><div><strong>{myRosterPicks.length}</strong><span>players drafted</span></div><div><strong>{rosterSlots.filter((slot) => !slot.player).length}</strong><span>open roster spots</span></div><button onClick={() => setStep("setup")}>Edit roster format</button></div><div className="lineup-slots">{rosterSlots.map((slot, index) => <article className={slot.player ? "lineup-slot filled" : "lineup-slot"} key={slot.id}><span>{slot.position === "SUPER_FLEX" ? "SFLEX" : slot.position}</span>{slot.player ? <div><strong>{slot.player.name}</strong><small>{slot.player.team} · {slot.player.position} · Pick {slot.player.pick}</small></div> : <div><strong>Open {rosterPositionLabels[slot.position]}</strong><small>{slot.position === "FLEX" ? "RB, WR, or TE" : slot.position === "SUPER_FLEX" ? "QB, RB, WR, or TE" : `Waiting for your ${rosterPositionLabels[slot.position].toLowerCase()}`}</small></div>}<i>{index + 1}</i></article>)}</div></div>}
         </section>
         <aside className="activity-panel"><div className="panel-title"><div><span className="eyebrow">PICK LOG</span><h2>Latest picks</h2></div><button onClick={undo} disabled={!picks.length}>Undo</button></div><div className="pick-log">{[...picks].reverse().map(p => <div key={p.pick}><b>{p.pick}</b><span className={`pos ${positionColors[p.position] || ""}`}>{p.position}</span><div><strong>{p.name}</strong><small>{teamDisplayName(p.roster)} · {p.team}</small></div></div>)}{!picks.length && <div className="empty-log"><span>⌁</span><strong>The board is clean</strong><small>Select a player to record pick 1.</small></div>}</div></aside>
       </section>

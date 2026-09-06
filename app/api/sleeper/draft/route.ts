@@ -17,8 +17,8 @@ export async function GET(request: Request) {
       return Response.json({ draft: { draft_id: draftId }, picks, users: [] }, { headers: { "Cache-Control": "no-store" } });
     }
     const [draft, picks] = await Promise.all([sleeperJson(`/draft/${draftId}`), sleeperJson(`/draft/${draftId}/picks`)]);
-    const users = draft.league_id ? await sleeperJson(`/league/${draft.league_id}/users`) : [];
-    return Response.json({ draft, picks, users }, { headers: { "Cache-Control": "no-store" } });
+    const [users, league] = draft.league_id ? await Promise.all([sleeperJson(`/league/${draft.league_id}/users`), sleeperJson(`/league/${draft.league_id}`)]) : [[], null];
+    return Response.json({ draft, picks, users, league }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return new Response(error instanceof Error ? error.message : "Sleeper could not be reached.", { status: 502 });
   }

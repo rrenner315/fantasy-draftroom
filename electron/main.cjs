@@ -94,8 +94,8 @@ function registerIpc() {
       return { draft: { draft_id: String(draftId) }, picks, users: [] };
     }
     const [draft, picks] = await Promise.all([sleeperJson(`/draft/${draftId}`), sleeperJson(`/draft/${draftId}/picks`)]);
-    const users = draft.league_id ? await sleeperJson(`/league/${draft.league_id}/users`) : [];
-    return { draft, picks, users };
+    const [users, league] = draft.league_id ? await Promise.all([sleeperJson(`/league/${draft.league_id}/users`), sleeperJson(`/league/${draft.league_id}`)]) : [[], null];
+    return { draft, picks, users, league };
   });
   ipcMain.handle("draftroom:load-espn-rankings", async (_event, format) => {
     const rankTypes = { standard: "STANDARD", ppr: "PPR", superflex: "SUPERFLEX" };

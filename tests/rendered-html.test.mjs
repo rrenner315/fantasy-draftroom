@@ -304,9 +304,29 @@ test("uses the entire draft workspace for the tier board", async () => {
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /draftCenterView === "tiers" \? "draft-grid tier-view"/);
+  assert.match(page, /draftCenterView !== "rosters" \? "draft-grid tier-view"/);
   assert.match(css, /\.draft-grid\.tier-view\{grid-template-columns:1fr\}/);
   assert.match(css, /\.tier-view>\.recommend-panel,\.tier-view>\.activity-panel\{display:none\}/);
+});
+
+test("configures and displays the user's roster", async () => {
+  const [page, css, route, main] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/sleeper/draft/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /Roster View/);
+  assert.match(page, /Set your lineup/);
+  assert.match(page, /"SUPER_FLEX"/);
+  assert.match(page, /applyRosterPreset/);
+  assert.match(page, /rosterPositions/);
+  assert.match(page, /Open \{rosterPositionLabels\[slot\.position\]\}/);
+  assert.match(route, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
+  assert.match(main, /sleeperJson\(`\/league\/\$\{draft\.league_id\}`\)/);
+  assert.match(css, /\.lineup-slots/);
+  assert.match(css, /\.roster-position-grid/);
 });
 
 test("connects to and reconciles a live Sleeper draft", async () => {
