@@ -319,7 +319,9 @@ test("connects to and reconciles a live Sleeper draft", async () => {
   ]);
 
   assert.match(page, /Connect a Sleeper draft/);
-  assert.match(page, /setInterval\(\(\) => syncSleeperDraft\(sleeperDraftId\), 3000\)/);
+  assert.match(page, /setInterval\(\(\) => syncSleeperDraft\(sleeperDraftId\), 1000\)/);
+  assert.match(page, /fetchSleeperDraft\(draftId, !connecting\)/);
+  assert.match(route, /picksOnly/);
   assert.match(page, /setPicks\(syncedPicks\)/);
   assert.match(page, /setWatchlistIds[\s\S]*syncedPicks/);
   assert.match(page, /This draft is controlled by Sleeper/);

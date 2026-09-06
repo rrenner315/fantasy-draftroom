@@ -8,7 +8,7 @@ contextBridge.exposeInMainWorld("draftroomDesktop", {
   getStorageInfo: () => ipcRenderer.invoke("draftroom:storage-info"),
   loadFfcRankings: (format, teams) => ipcRenderer.invoke("draftroom:load-ffc-rankings", format, teams),
   loadSleeperRankings: (format) => ipcRenderer.invoke("draftroom:load-sleeper-rankings", format),
-  loadSleeperDraft: (draftId) => ipcRenderer.invoke("draftroom:load-sleeper-draft", draftId),
+  loadSleeperDraft: (draftId, picksOnly = false) => ipcRenderer.invoke("draftroom:load-sleeper-draft", draftId, picksOnly),
   loadEspnRankings: (format) => ipcRenderer.invoke("draftroom:load-espn-rankings", format),
   loadYahooRankings: (format) => ipcRenderer.invoke("draftroom:load-yahoo-rankings", format),
 });

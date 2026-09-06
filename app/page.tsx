@@ -32,7 +32,7 @@ type DesktopApi = {
   getStorageInfo: () => Promise<{ databasePath: string; backupsPath: string }>;
   loadFfcRankings: (format: string, teams: number) => Promise<FfcResponse>;
   loadSleeperRankings: (format: string) => Promise<FfcResponse>;
-  loadSleeperDraft: (draftId: string) => Promise<SleeperDraftResponse>;
+  loadSleeperDraft: (draftId: string, picksOnly?: boolean) => Promise<SleeperDraftResponse>;
   loadEspnRankings: (format: string) => Promise<FfcResponse>;
   loadYahooRankings: (format: string) => Promise<FfcResponse>;
 };
@@ -360,9 +360,9 @@ export default function Home() {
     });
   };
 
-  const fetchSleeperDraft = async (draftId: string) => {
-    if (window.draftroomDesktop) return window.draftroomDesktop.loadSleeperDraft(draftId);
-    const response = await fetch(`/api/sleeper/draft?draftId=${encodeURIComponent(draftId)}`);
+  const fetchSleeperDraft = async (draftId: string, picksOnly = false) => {
+    if (window.draftroomDesktop) return window.draftroomDesktop.loadSleeperDraft(draftId, picksOnly);
+    const response = await fetch(`/api/sleeper/draft?draftId=${encodeURIComponent(draftId)}${picksOnly ? "&picksOnly=1" : ""}`);
     if (!response.ok) throw new Error(await response.text());
     return response.json() as Promise<SleeperDraftResponse>;
   };
@@ -413,7 +413,7 @@ export default function Home() {
     sleeperSyncing.current = true;
     if (connecting) setSleeperSyncState("connecting");
     try {
-      applySleeperSnapshot(await fetchSleeperDraft(draftId));
+      applySleeperSnapshot(await fetchSleeperDraft(draftId, !connecting));
       return true;
     } catch (error) {
       setSleeperSyncState("error");
@@ -460,7 +460,7 @@ export default function Home() {
   useEffect(() => {
     if (step !== "draft" || !sleeperDraftId) return;
     syncSleeperDraft(sleeperDraftId);
-    const timer = window.setInterval(() => syncSleeperDraft(sleeperDraftId), 3000);
+    const timer = window.setInterval(() => syncSleeperDraft(sleeperDraftId), 1000);
     return () => window.clearInterval(timer);
   }, [step, sleeperDraftId, players]);
 
