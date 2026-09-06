@@ -184,6 +184,7 @@ test("offers roster and Excel-style tier views in the draft room", async () => {
   assert.match(page, /available\.filter\(\(player\) => player\.position === boardPosition\)/);
   assert.match(page, /group\.tier === null \? "N\/A"/);
   assert.match(css, /draft-tier-board/);
+  assert.match(css, /\.draft-view-tiers \.draft-tier-board\{grid-template-columns:repeat\(4,245px\);min-width:1004px/);
   assert.match(css, /tier-column-qb/);
   assert.match(css, /tier-column-rb/);
   assert.match(css, /tier-column-wr/);
