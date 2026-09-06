@@ -21,7 +21,8 @@ test("server-renders The Program home page", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>The Program — Fantasy Football Draft Companion<\/title>/i);
-  assert.match(html, /Welcome to The Program/);
+  assert.match(html, /Rankings and drafts/);
+  assert.match(html, /Manage your ranking sets, customize tiers, and continue active drafts/);
   assert.match(html, /Create rankings set/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/i);
 });
@@ -69,7 +70,7 @@ test("supports Excel workbooks whose blank cells separate position tiers", async
 
   assert.match(packageJson, /read-excel-file/);
   assert.match(page, /parseTierRows/);
-  assert.match(page, /players not included in the sheet become N\/A/i);
+  assert.match(page, /players not listed become N\/A/i);
   assert.match(page, /Choose tier sheet/);
   assert.match(page, /tier:.*\?\? null/s);
 });
@@ -115,10 +116,9 @@ test("detects common tier sheet layouts", async () => {
   ]);
 
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  assert.match(page, /Supported tier formats/);
   assert.match(page, /CSV, TSV, and Excel files are supported/);
   assert.match(page, /inspect every worksheet/);
-  assert.match(page, /Blank templates/);
+  assert.match(page, /download a blank template/i);
   assert.match(page, /downloadTierTemplate\("table"\)/);
   assert.match(page, /downloadTierTemplate\("positions"\)/);
   assert.match(page, /The-Program-Tier-Template-Player-Table\.csv/);
@@ -255,4 +255,38 @@ test("uses the blue and slate visual theme", async () => {
   assert.match(css, /--card:#151f30/);
   assert.match(css, /--lime:#60a5fa/);
   assert.match(css, /background:#3b82f6/);
+});
+
+test("uses a guided tier import flow", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /tierImporterOpen/);
+  assert.match(page, /Prepare your tier sheet/);
+  assert.match(page, /Upload the completed sheet/);
+  assert.match(page, /Review the results/);
+  assert.match(page, /Already have one\? Skip to step 2/);
+  assert.match(css, /tier-import-steps/);
+  assert.match(css, /tier-step-number/);
+});
+
+test("replaces duplicate recommendations with toggleable draft signals", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /showDraftSignals/);
+  assert.match(page, /Draft signals/);
+  assert.match(page, /Hide signals/);
+  assert.match(page, /Show signals/);
+  assert.match(page, /Tier \$\{cliff\.tier\}/);
+  assert.match(page, /selected in the last/);
+  assert.match(page, /picksUntilMine/);
+  assert.doesNotMatch(page, /const recommendations/);
+  assert.match(css, /signals-hidden/);
+  assert.match(css, /draft-signal-list/);
+  assert.match(css, /\.recommend-panel \.player-list\{flex:1 1 auto/);
 });

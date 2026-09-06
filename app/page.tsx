@@ -99,6 +99,7 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [position, setPosition] = useState("ALL");
   const [draftCenterView, setDraftCenterView] = useState<"rosters" | "tiers">("rosters");
+  const [showDraftSignals, setShowDraftSignals] = useState(true);
   const [showAllRankings, setShowAllRankings] = useState(false);
   const [rankInputs, setRankInputs] = useState<Record<string, string>>({});
   const [draggedPlayerId, setDraggedPlayerId] = useState<string | null>(null);
@@ -122,6 +123,7 @@ export default function Home() {
   const [platformRanks, setPlatformRanks] = useState<Record<string, number>>({});
   const [leagueRanksLoading, setLeagueRanksLoading] = useState(false);
   const [expertImporterOpen, setExpertImporterOpen] = useState(false);
+  const [tierImporterOpen, setTierImporterOpen] = useState(false);
   const [tierFileName, setTierFileName] = useState("");
   const [unresolvedTierMatches, setUnresolvedTierMatches] = useState<UnresolvedTierMatch[]>([]);
   const [tierMatchSelections, setTierMatchSelections] = useState<Record<string, string>>( {} );
@@ -258,6 +260,7 @@ export default function Home() {
       if (!matchedTiers.size && !unresolved.length) throw new Error("None of the spreadsheet players matched the players on this board.");
       setPlayers((current) => current.map((player) => ({ ...player, tier: matchedTiers.get(player.id) ?? null })));
       setTierFileName(file.name);
+      setTierImporterOpen(false);
       setUnresolvedTierMatches(unresolved);
       setTierMatchSelections({});
       setNotice(unresolved.length ? `${matchedTiers.size} players matched automatically. Review ${unresolved.length} possible name ${unresolved.length === 1 ? "mismatch" : "mismatches"}.` : `${matchedTiers.size} players received tiers from ${file.name}. ${players.length - matchedTiers.size} unlisted players were set to N/A.`);
@@ -511,7 +514,24 @@ export default function Home() {
     const insight = marketInsight(player);
     return insight ? <span className={`strategy-badge strategy-${insight.kind}`}><b>{insight.label}</b><i>{insight.detail}</i></span> : null;
   };
-  const recommendations = [...available].sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank).slice(0, 5);
+  let nextUserPick = nextPick;
+  while (ownerForPick(nextUserPick, teams, snake) !== mySlot && nextUserPick < nextPick + teams) nextUserPick++;
+  const picksUntilMine = nextUserPick - nextPick;
+  const draftSignals: { kind: string; title: string; detail: string }[] = [];
+  const tierCliffs = ["RB", "WR", "QB", "TE"].flatMap((signalPosition) => {
+    const positionPlayers = available.filter((player) => player.position === signalPosition && player.tier !== null).sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank);
+    if (!positionPlayers.length) return [];
+    const topTier = positionPlayers[0].tier;
+    const remaining = positionPlayers.filter((player) => player.tier === topTier);
+    return remaining.length <= 3 ? [{ position: signalPosition, tier: topTier, remaining }] : [];
+  }).sort((left, right) => left.remaining.length - right.remaining.length).slice(0, 2);
+  tierCliffs.forEach((cliff) => draftSignals.push({ kind: "cliff", title: `${cliff.remaining.length === 1 ? "Last" : cliff.remaining.length} Tier ${cliff.tier} ${cliff.position}${cliff.remaining.length === 1 ? "" : "s"}`, detail: cliff.remaining.map((player) => player.name).join(" · ") }));
+  const recentPicks = picks.slice(-8);
+  const recentRun = ["RB", "WR", "QB", "TE"].map((runPosition) => ({ position: runPosition, count: recentPicks.filter((pick) => pick.position === runPosition).length })).sort((left, right) => right.count - left.count)[0];
+  if (recentRun?.count >= 3) draftSignals.push({ kind: "run", title: `${recentRun.position} run`, detail: `${recentRun.count} selected in the last ${recentPicks.length} picks` });
+  const valueOpportunity = available.filter((player) => platformRanks[player.id] - player.rank >= teams).sort((left, right) => (platformRanks[right.id] - right.rank) - (platformRanks[left.id] - left.rank))[0];
+  if (valueOpportunity) draftSignals.push({ kind: "value", title: `${valueOpportunity.name} may last`, detail: `Your rank #${valueOpportunity.rank} · ${leagueProviderName} #${platformRanks[valueOpportunity.id]}` });
+  draftSignals.push({ kind: "clock", title: picksUntilMine === 0 ? "You are on the clock" : `${picksUntilMine} ${picksUntilMine === 1 ? "pick" : "picks"} until your turn`, detail: picksUntilMine === 0 ? `Pick ${nextPick} · Round ${round}` : `Your next selection is pick ${nextUserPick}` });
   const tierBoardColumns = ["QB", "RB", "WR", "TE"].map((boardPosition) => {
     const positionPlayers = available.filter((player) => player.position === boardPosition).sort((a, b) => tierValue(a) - tierValue(b) || a.rank - b.rank);
     const tiers = Array.from(new Set(positionPlayers.map((player) => player.tier))).sort((left, right) => (left ?? Number.MAX_SAFE_INTEGER) - (right ?? Number.MAX_SAFE_INTEGER));
@@ -699,6 +719,14 @@ export default function Home() {
     </div>
     <footer><div><strong>{selectedSource.name}</strong><small>{formatNames[onlineFormat]}{onlineProvider === "ffc" ? ` · ${onlineTeams} teams` : ""}</small></div><div><button className="dialog-cancel" disabled={onlineLoading} onClick={() => setExpertImporterOpen(false)}>Cancel</button><button className="expert-import-submit" disabled={onlineLoading} onClick={loadOnlineRankings}>{onlineLoading ? "Importing…" : "Import rankings"}<span>↓</span></button></div></footer>
   </section></div>;
+  const tierImporterDialog = tierImporterOpen && <div className="expert-import-backdrop" role="presentation" onMouseDown={() => setTierImporterOpen(false)}><section className="tier-import-dialog" role="dialog" aria-modal="true" aria-labelledby="tier-import-title" onMouseDown={(event) => event.stopPropagation()}>
+    <header><div><span className="online-badge">CUSTOM TIERS</span><h2 id="tier-import-title">Apply tiers from a sheet</h2><p>Use your own sheet or start with one of our templates. Your player rankings will not be reordered.</p></div><button className="expert-dialog-close" aria-label="Close tier sheet importer" onClick={() => setTierImporterOpen(false)}>×</button></header>
+    <div className="tier-import-steps">
+      <section className="tier-import-step"><span className="tier-step-number">1</span><div><strong>Prepare your tier sheet</strong><p>Already have one? Skip to step 2. Otherwise, download a blank template and fill in player names and tier numbers.</p><div className="tier-template-options"><button type="button" onClick={() => downloadTierTemplate("table")}><b>↓ Player table</b><small>One list with Player, Position, Team, and Tier columns</small></button><button type="button" onClick={() => downloadTierTemplate("positions")}><b>↓ By position</b><small>Separate Player, Team, and Tier columns for each position</small></button></div></div></section>
+      <section className="tier-import-step"><span className="tier-step-number">2</span><div><strong>Upload the completed sheet</strong><p>CSV, TSV, and Excel files are supported. We&apos;ll inspect every worksheet and identify the layout automatically.</p><label className="tier-step-upload"><input type="file" accept=".csv,.tsv,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { applyTierWorkbook(event.target.files); event.currentTarget.value = ""; }} /><span>Choose tier sheet</span><b>↑</b></label></div></section>
+      <section className="tier-import-step tier-review-step"><span className="tier-step-number">3</span><div><strong>Review the results</strong><p>Obvious name variations are matched automatically. If any names are uncertain, we&apos;ll ask you to confirm them before finishing. Players not listed become N/A.</p></div></section>
+    </div>
+  </section></div>;
   const tierMatchDialog = unresolvedTierMatches.length > 0 && <div className="expert-import-backdrop" role="presentation"><section className="tier-match-dialog" role="dialog" aria-modal="true" aria-labelledby="tier-match-title">
     <header><div><span className="online-badge">REVIEW NAME MATCHES</span><h2 id="tier-match-title">A few names need your help</h2><p>We matched obvious differences automatically. Choose the corresponding player for any remaining tier names you recognize, or leave them unmatched.</p></div><span className="match-count">{unresolvedTierMatches.length}</span></header>
     <div className="tier-match-list">{unresolvedTierMatches.map((match) => <div className="tier-match-row" key={match.id}><div className="incoming-tier-name"><span>{match.position} · Tier {match.tier}</span><strong>{match.name}</strong><small>{match.team || "Team not provided"} · From tier workbook</small></div><span className="match-arrow">→</span><label><span className="sr-only">Match {match.name} to a ranked player</span><select value={tierMatchSelections[match.id] || ""} onChange={(event) => setTierMatchSelections((current) => ({ ...current, [match.id]: event.target.value }))}><option value="">Leave unmatched</option>{match.candidates.map((candidate) => <option value={candidate.id} key={candidate.id} disabled={Object.entries(tierMatchSelections).some(([matchId, playerId]) => matchId !== match.id && playerId === candidate.id)}>{candidate.name} · {candidate.team} ({Math.round(candidate.score * 100)}% match)</option>)}</select></label></div>)}</div>
@@ -715,8 +743,8 @@ export default function Home() {
         <div className="home-header-actions"><button className="header-primary" onClick={createRankingSet}>＋ New rankings set</button>{workspaceSwitcher()}</div>
       </header>
       <section className="home-wrap">
-        <div className="home-hero"><div><div className="eyebrow">YOUR COMMAND CENTER</div><h1>Welcome to The Program.</h1><p className="lede">Build rankings once, then take them into as many drafts as you need.</p></div><div className="home-stats"><span><strong>{rankingSets.length}</strong> ranking {rankingSets.length === 1 ? "set" : "sets"}</span><i /><span><strong>{rankingSets.reduce((total, set) => total + set.drafts.length, 0)}</strong> total drafts</span></div></div>
-        <div className="home-section-head"><div><h2>Your rankings</h2><p>Each set keeps its own expert sources, custom order, and tiers.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
+        <div className="home-hero"><div><div className="eyebrow">THE PROGRAM</div><h1>Rankings and drafts</h1><p className="lede">Manage your ranking sets, customize tiers, and continue active drafts.</p></div><div className="home-stats"><span><strong>{rankingSets.length}</strong> ranking {rankingSets.length === 1 ? "set" : "sets"}</span><i /><span><strong>{rankingSets.reduce((total, set) => total + set.drafts.length, 0)}</strong> total drafts</span></div></div>
+        <div className="home-section-head"><div><h2>Ranking sets</h2><p>Each set includes its ranking sources, player order, tiers, and drafts.</p></div><button onClick={createRankingSet}>＋ Create rankings set</button></div>
         <div className="ranking-set-grid">
           {rankingSets.map((set) => <article className="ranking-home-card" key={set.id}>
             <div className="ranking-card-head"><div className="set-icon">≡</div><div><h3>{set.name}</h3><p>{set.players.length} players · {set.files.length} ranking {set.files.length === 1 ? "source" : "sources"}</p></div><div className="card-item-actions"><button aria-label={`Rename ${set.name}`} onClick={() => renameSet(set)}>✎</button><button className="delete-icon" aria-label={`Delete ${set.name}`} onClick={() => setDeleteAction({ kind: "set", setId: set.id, name: set.name })}>×</button></div></div>
@@ -735,6 +763,7 @@ export default function Home() {
       {nameDialog}
       {deleteDialog}
       {expertImporterDialog}
+      {tierImporterDialog}
       {tierMatchDialog}
       <header className="topbar">
         <button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button>
@@ -763,14 +792,8 @@ export default function Home() {
         </div>
 
         <div className="tier-import-card">
-          <div><span className="online-badge">CUSTOM TIERS</span><h2>Apply tiers from a sheet</h2><p>We&apos;ll detect common tier layouts automatically. Players not included in the sheet become N/A.</p>{tierFileName && <small>Applied: {tierFileName}</small>}</div>
-          <div className="tier-import-actions"><div className="tier-help"><button type="button" aria-label="Show supported tier sheet formats">?</button><div role="tooltip"><strong>Supported tier formats</strong><p><b>Player table:</b> columns named Player (or Name), Tier, and optionally Position and Team. Players can appear in any order.</p><p><b>Position groups:</b> each position has its own Player Name, Team, and Tier columns.</p><p><b>Blank-separated tiers:</b> QB, RB, WR, and TE columns with a blank space between tiers.</p><p><b>Tier groups:</b> headings such as Tier 1, Tier 2, etc., with player names listed beneath them.</p><small>CSV, TSV, and Excel files are supported. Headers can appear after title or notes rows, and we&apos;ll inspect every worksheet. Including Position improves name matching.</small></div></div>
-          <div className="tier-template-menu"><span>Blank templates</span><button type="button" onClick={() => downloadTierTemplate("table")}>↓ Player table</button><button type="button" onClick={() => downloadTierTemplate("positions")}>↓ By position</button></div>
-          <label className={players.length ? "tier-file-button" : "tier-file-button disabled"}>
-            <input type="file" accept=".csv,.tsv,.xlsx,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={!players.length} onChange={(event) => { applyTierWorkbook(event.target.files); event.currentTarget.value = ""; }} />
-            <span>Choose tier sheet</span><b>↑</b>
-          </label>
-          </div>
+          <div className="tier-launch-icon">≡</div><div><span className="online-badge">CUSTOM TIERS</span><h2>{tierFileName ? "Update tiers from a sheet" : "Apply tiers from a sheet"}</h2><p>Upload your own tier sheet or use a blank template. We&apos;ll guide you through it.</p>{tierFileName && <small>Currently applied: {tierFileName}</small>}</div>
+          <button type="button" disabled={!players.length} onClick={() => setTierImporterOpen(true)}>{tierFileName ? "Update tiers" : "Apply tiers"}<span>→</span></button>
         </div>
 
         <div className="section-heading"><div><h2>Source priority</h2><p>Top source wins when a player appears in more than one list.</p></div><span>{players.length} unique players</span></div>
@@ -827,8 +850,8 @@ export default function Home() {
       {deleteDialog}
       <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
       <section className="draft-grid">
-        <aside className="recommend-panel"><div className="panel-title"><div><span className="eyebrow">YOUR BOARD</span><h2>Best available</h2></div><span>{available.length} left</span></div>
-          <div className="recommendations">{recommendations.map((player, index) => <button className="recommend-card" key={player.id} onClick={() => draftPlayer(player)}><span className="recommend-rank">{index + 1}</span><div><strong>{player.name}</strong><small><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span> {player.team} · Tier {tierLabel(player)}</small></div><span className="add-pick">Draft +</span></button>)}</div>
+        <aside className={showDraftSignals ? "recommend-panel signals-visible" : "recommend-panel signals-hidden"}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><button className={showDraftSignals ? "signals-toggle active" : "signals-toggle"} aria-pressed={showDraftSignals} onClick={() => setShowDraftSignals((visible) => !visible)}>{showDraftSignals ? "Hide signals" : "Show signals"}</button></div>
+          {showDraftSignals && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}
           <div className="filters"><div className="search"><span>⌕</span><input aria-label="Search available players" placeholder="Search players" value={search} onChange={(e) => setSearch(e.target.value)} /></div><div className="filter-row">{["ALL","RB","WR","QB","TE","FLEX"].map(p => <button className={position === p ? "active" : ""} onClick={() => setPosition(p)} key={p}>{p}</button>)}</div></div>
           <div className="player-list">{filtered.slice(0, 60).map((player) => <button key={player.id} onClick={() => draftPlayer(player)}><b>{player.rank}</b><div><strong>{player.name}</strong><small>{player.team} · Tier {tierLabel(player)} · {player.source}</small>{strategyBadge(player)}</div><span className={`pos ${positionColors[player.position] || ""}`}>{player.position}</span><i>+</i></button>)}</div>
         </aside>
