@@ -12,6 +12,7 @@ A fantasy football draft companion for building your own rankings, organizing ti
 - Arrange source priority: the first source wins for shared players, and later sources fill gaps. Reorder individual players using drag handles or rank controls.
 - Apply custom tiers from a spreadsheet, download blank tier templates, and review uncertain player-name matches. Supported layouts include player tables, position columns separated by blank cells, and tier headings. Players absent from the tier sheet receive `N/A`.
 - Configure 8–16 teams from the available presets, your draft position, snake or linear order, and starting/bench roster slots, including Superflex and 2QB presets.
+- Open **Quick picks** in a separate browser or desktop window beside Yahoo (or another draft room). Search by name, initials, or team; use arrow keys and Enter, Undo, or Skip pick. Fill skipped slots later without shifting subsequent picks. Both windows share the active draft; keep the full program open.
 - Track picks with Draft Board, Roster View, and Tier Board views. Search and filter available players, check bye weeks, rename teams, and undo manual picks.
 - Choose a companion panel for draft signals, your watchlist, or your roster, or hide it. Signals include tier scarcity, position runs, and stacking opportunities.
 - Optionally compare personal ranks with Sleeper, ESPN, or Yahoo defaults to flag discrepancies of at least one round.
@@ -82,7 +83,7 @@ Desktop saves go to `draftroom.db` in Electron's user-data directory, with daily
 | `npm run desktop:package:win` | Build Windows NSIS installer and ZIP packages |
 | `npm run desktop:package` | Package for the current platform; Linux configuration targets AppImage |
 
-On Windows, use `npx vinext build` and `npx vinext start` for browser build/start. To run the tests, run `npx vinext build`, then `node --test tests/rendered-html.test.mjs` as a separate command.
+On Windows, use `npx vinext build` and `npx vinext start` for browser build/start. To run the tests, run `npx vinext build`, then `node --test tests/rendered-html.test.mjs tests/manual-draft.test.mjs tests/companion-window.test.cjs` as a separate command.
 
 Packages are written to `release/`. Build macOS packages on a Mac and Windows packages on Windows. Signing credentials are not configured in this repository, so locally generated installers are unsigned development builds. Packaging may download additional tools and requires internet access.
 

@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { applyManualAction, draftRevision } from "./manual-draft.mjs";
+import { useCompanion } from "./use-companion";
+import type { CompanionBridge, CompanionSnapshot, PickAction } from "./companion-types";
 import readXlsxFile, { readSheetNames } from "read-excel-file";
 import { findAutomaticPlayerMatch, normalizePlayerName, rankPlayerMatches } from "./name-matching.mjs";
 import { parseDelimitedText, parseRankingRows } from "./ranking-parser.mjs";
@@ -19,14 +22,14 @@ type Player = {
 };
 
 type RankingFile = { id: string; name: string; players: Player[] };
-type DraftPick = Player & { pick: number; roster: number };
+type DraftPick = Player & { pick: number; roster: number; skipped?: boolean };
 type LeagueProvider = "none" | "espn" | "sleeper" | "yahoo";
 type RosterPosition = "QB" | "RB" | "WR" | "TE" | "FLEX" | "SUPER_FLEX" | "K" | "DST" | "BN";
 type DraftSession = { id: string; name: string; teams: number; mySlot: number; snake: boolean; picks: DraftPick[]; teamNames?: Record<string, string>; rosterPositions?: RosterPosition[]; leagueProvider?: LeagueProvider; leagueFormat?: string; platformRanks?: Record<string, number>; watchlistIds?: string[]; sleeperDraftId?: string; sleeperPlayerMatches?: Record<string, string>; sleeperSyncPaused?: boolean };
 type RankingSet = { id: string; name: string; files: RankingFile[]; players: Player[]; drafts: DraftSession[] };
 type NameAction = { kind: "create-set" } | { kind: "create-draft"; setId: string } | { kind: "rename-set"; setId: string } | { kind: "rename-draft"; setId: string; draftId: string } | { kind: "rename-team"; team: number };
 type DeleteAction = { kind: "set"; setId: string; name: string } | { kind: "draft"; setId: string; draftId: string; name: string };
-type DesktopApi = {
+type DesktopApi = CompanionBridge & {
   loadState: () => Promise<Record<string, unknown> | null>;
   saveState: (state: Record<string, unknown>) => Promise<string>;
   exportBackup: () => Promise<{ canceled: boolean; filePath?: string }>;
@@ -707,7 +710,7 @@ export default function Home() {
     return remaining.length <= 3 ? [{ position: signalPosition, tier: topTier, remaining }] : [];
   }).sort((left, right) => left.remaining.length - right.remaining.length).slice(0, 2);
   tierCliffs.forEach((cliff) => draftSignals.push({ kind: "cliff", title: `${cliff.remaining.length === 1 ? "Last" : cliff.remaining.length} Tier ${cliff.tier} ${cliff.position}${cliff.remaining.length === 1 ? "" : "s"}`, detail: cliff.remaining.map((player) => player.name).join(" · ") }));
-  const myRosterPicks = picks.filter((pick) => pick.roster === mySlot);
+  const myRosterPicks = picks.filter((pick) => pick.roster === mySlot && !pick.skipped);
   const rosterPositionCount = (position: RosterPosition) => rosterPositions.filter((slot) => slot === position).length;
   const setRosterPositionCount = (position: RosterPosition, count: number) => {
     const next = rosterPositions.filter((slot) => slot !== position);
@@ -752,14 +755,29 @@ export default function Home() {
     return { position: boardPosition, groups: tiers.map((tier) => ({ tier, players: positionPlayers.filter((player) => player.tier === tier) })) };
   });
 
+  const manualSnapshot: CompanionSnapshot = {
+    draftId: activeDraftId, name: rankingSets.find((set) => set.id === activeSetId)?.drafts.find((draft) => draft.id === activeDraftId)?.name || "Draft",
+    teams, snake, mySlot, teamNames, players, picks,
+    locked: Boolean(sleeperDraftId && !sleeperSyncPaused), active: step === "draft" && Boolean(activeDraftId), saveStatus,
+  };
+  const manualState = useRef(manualSnapshot);
+  manualState.current = manualSnapshot;
+  const applyPick = (action: PickAction) => {
+    const next = applyManualAction(manualState.current, action) as DraftPick[];
+    // Advance immediately: two window commands can arrive before React renders.
+    manualState.current = { ...manualState.current, picks: next };
+    setPicks(next);
+    if (action.kind === "pick") setWatchlistIds((current) => current.filter((id) => id !== action.playerId));
+    return next;
+  };
+  const companion = useCompanion(manualSnapshot, applyPick);
   const draftPlayer = (player: Player) => {
     if (sleeperDraftId && !sleeperSyncPaused) {
       setSleeperSyncMessage("This draft is controlled by Sleeper. Make the selection there and it will appear here automatically.");
       return;
     }
-    setPicks((current) => [...current, { ...player, pick: nextPick, roster: onClock }]);
-    setWatchlistIds((current) => current.filter((id) => id !== player.id));
-    setSearch("");
+    try { applyPick({ kind: "pick", playerId: player.id, revision: draftRevision(manualState.current) }); setSearch(""); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not record the pick."); }
   };
 
   const toggleWatchlist = (player: Player) => setWatchlistIds((current) => current.includes(player.id) ? current.filter((id) => id !== player.id) : [...current, player.id]);
@@ -769,7 +787,8 @@ export default function Home() {
       setSleeperSyncMessage("Undo the pick in Sleeper and The Program will update automatically.");
       return;
     }
-    setPicks((current) => current.slice(0, -1));
+    try { applyPick({ kind: "undo", revision: draftRevision(manualState.current) }); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "Could not undo the pick."); }
   };
 
   const openRankingSet = (set: RankingSet, mode: "rankings" | "draft", draft?: DraftSession) => {
@@ -1119,7 +1138,8 @@ export default function Home() {
       {deleteDialog}
       {sleeperMatchDialog}
       {sleeperOverrideReport}
-      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId && !sleeperSyncPaused)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      <header className="draft-topbar"><button className="brand home-brand" onClick={() => setStep("home")}><span className="brand-mark">P</span><span>The Program</span></button><div className={onClock === mySlot ? "clock my-clock" : "clock"}><span>{onClock === mySlot ? "YOU'RE ON THE CLOCK" : `${teamDisplayName(onClock).toUpperCase()} IS ON THE CLOCK`}</span><strong>Pick {nextPick}</strong><div className="pick-meta"><small>Round {round}</small><i className="pick-timer" aria-label={`Current pick has taken ${pickTimerLabel}`}><b aria-hidden="true">◷</b>{pickTimerLabel}</i></div></div><div className="draft-actions">{workspaceSwitcher()}<button onClick={companion.open}>↗ Quick picks</button><button onClick={undo} disabled={!picks.length || Boolean(sleeperDraftId && !sleeperSyncPaused)}>↶ Undo</button><button onClick={() => setStep("setup")}>⚙ Settings</button></div></header>
+      {companion.error && <div role="alert" className="companion-open-error">{companion.error}</div>}
       <section className={`draft-grid draft-view-${draftCenterView}`}>
         <aside className={`recommend-panel side-panel-${sidePanelMode}`}><div className="panel-title player-list-title"><div><span className="eyebrow">YOUR RANKINGS</span><h2>Available players</h2></div><div className="side-panel-toggle" role="group" aria-label="Player list companion panel">{(["none", "signals", "watchlist", "roster"] as const).map((mode) => <button className={sidePanelMode === mode ? "active" : ""} aria-pressed={sidePanelMode === mode} onClick={() => setSidePanelMode(mode)} key={mode}>{mode === "none" ? "None" : mode === "signals" ? "Signals" : mode === "roster" ? "Roster" : `Watchlist${watchlist.length ? ` ${watchlist.length}` : ""}`}</button>)}</div></div>
           {sidePanelMode === "signals" && <section className="draft-signals" aria-label="Draft signals"><div className="draft-signals-heading"><strong>Draft signals</strong><small>Live strategy notes</small></div><div className="draft-signal-list">{draftSignals.slice(0, 4).map((signal, index) => <div className={`draft-signal signal-${signal.kind}`} key={`${signal.kind}-${index}`}><span>{signal.kind === "cliff" ? "▾" : signal.kind === "run" ? "↗" : signal.kind === "value" ? "$" : signal.kind === "stack" ? "⌁" : "◷"}</span><div><strong>{signal.title}</strong><small>{signal.detail}</small></div></div>)}</div></section>}

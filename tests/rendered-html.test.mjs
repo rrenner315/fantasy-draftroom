@@ -416,3 +416,16 @@ test("connects to and reconciles a live Sleeper draft", async () => {
   assert.match(css, /sleeper-override-dialog/);
   assert.match(css, /\.board-heading\{position:sticky/);
 });
+
+
+test("server-renders the separate companion route with manual pick controls", async () => {
+  const response = await render("/companion");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Quick picks/);
+  assert.match(html, /Find a player/);
+  assert.match(html, /Skip pick/);
+  assert.match(html, /Undo/);
+  assert.match(html, /Keep the full program open/);
+  assert.doesNotMatch(html, /Create rankings set/);
+});

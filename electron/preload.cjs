@@ -1,6 +1,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("draftroomDesktop", {
+  openCompanion: () => ipcRenderer.invoke("draftroom:open-companion"),
+  sendCompanionMessage: (message) => ipcRenderer.send("draftroom:companion-message", message),
+  onCompanionMessage: (callback) => {
+    const listener = (_event, message) => callback(message);
+    ipcRenderer.on("draftroom:companion-message", listener);
+    return () => ipcRenderer.removeListener("draftroom:companion-message", listener);
+  },
   loadState: () => ipcRenderer.invoke("draftroom:load-state"),
   saveState: (state) => ipcRenderer.invoke("draftroom:save-state", state),
   exportBackup: () => ipcRenderer.invoke("draftroom:export-backup"),

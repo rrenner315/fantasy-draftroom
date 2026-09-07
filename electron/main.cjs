@@ -6,6 +6,8 @@ const path = require("node:path");
 let database;
 let databasePath;
 let backupsPath;
+let mainWindow;
+let companionWindow;
 
 function writeAtomic(target, contents) {
   const temporary = `${target}.tmp`;
@@ -52,8 +54,29 @@ function saveState(state) {
 }
 
 function registerIpc() {
+  ipcMain.handle("draftroom:open-companion", (event) => {
+    if (event.sender !== mainWindow?.webContents) return;
+    if (companionWindow && !companionWindow.isDestroyed()) { companionWindow.show(); companionWindow.focus(); return; }
+    companionWindow = new BrowserWindow({
+      width: 450, height: 800, minWidth: 360, minHeight: 620,
+      title: "Quick picks — The Program", backgroundColor: "#09111f",
+      webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+    });
+    companionWindow.loadFile(path.join(__dirname, "..", "desktop-dist", "index.html"), { query: { companion: "1" } });
+    companionWindow.on("closed", () => { companionWindow = null; });
+    companionWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    companionWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  });
+  ipcMain.on("draftroom:companion-message", (event, message) => {
+    if (!message || message.channel !== "draft-companion") return;
+    if (event.sender === mainWindow?.webContents && message.type === "snapshot" && companionWindow && !companionWindow.isDestroyed()) companionWindow.webContents.send("draftroom:companion-message", message);
+    if (event.sender === companionWindow?.webContents && ["hello", "command"].includes(message.type) && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("draftroom:companion-message", message);
+  });
   ipcMain.handle("draftroom:load-state", () => readState());
-  ipcMain.handle("draftroom:save-state", (_event, state) => saveState(state));
+  ipcMain.handle("draftroom:save-state", (event, state) => {
+    if (event.sender !== mainWindow?.webContents) throw new Error("Only the full program can save draft state.");
+    return saveState(state);
+  });
   ipcMain.handle("draftroom:storage-info", () => ({ databasePath, backupsPath }));
   ipcMain.handle("draftroom:load-ffc-rankings", async (_event, format, teams) => {
     const allowedFormats = new Set(["standard", "half-ppr", "ppr", "2qb"]);
@@ -168,7 +191,13 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
+  });
+  mainWindow = window;
+  window.on("closed", () => {
+    mainWindow = null;
+    if (companionWindow && !companionWindow.isDestroyed()) companionWindow.close();
   });
   window.loadFile(path.join(__dirname, "..", "desktop-dist", "index.html"));
 }

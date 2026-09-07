@@ -180,6 +180,18 @@ These locally built installers are unsigned development builds, so your operatin
 
 For a live Sleeper draft, use **Connect a Sleeper draft** in draft setup and paste the draft-room link or ID. Make your actual picks in Sleeper; The Program follows them automatically. Resolve any unmatched names when prompted. **Switch to manual** pauses syncing; reconnecting can replace manual changes with Sleeper's picks.
 
+### Keep up with Yahoo using Quick picks
+
+In the full draft room, click **↗ Quick picks** at the top right. A separate compact window opens. Move it beside Yahoo's draft room, including onto another monitor, while keeping the full program open. On a browser, allow pop-ups for the local site if prompted. Some browsers may open a tab instead; drag it into its own window.
+
+- Click the search box and type a player name, initials, or team. Use position filters to narrow the results.
+- Use **↑ / ↓** to highlight a result and **Enter** to record it, or click the player. Search clears after the pick, ready for the next name. **Esc** clears search or cancels filling a skipped slot.
+- **Undo** removes the most recent pick, including a skipped pick. The player becomes available again.
+- **Skip pick** reserves the current slot as **Unknown player** and moves to the next pick. Once you identify the player, choose that slot from the skipped-pick selector and record the player. Later picks stay in their original slots. Undo always removes the latest draft slot, even if you just filled an earlier one.
+- Picks from either window immediately update both. The compact window follows the active draft in the full program. Changes are disabled while the main window is outside the draft room or while Sleeper controls the draft.
+
+This is manual entry: make your actual selection in Yahoo and record each league pick in The Program. A skipped player's availability remains unknown until you fill that slot. Closing Quick picks leaves the full program running. If the full program is reloaded or closed, reopen Quick picks from the draft room to reconnect. On desktop, closing the full window also closes its companion.
+
 ## 7. Keep your data safe
 
 ### Browser
